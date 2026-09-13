@@ -29,12 +29,17 @@ class StripeLedger(Ledger):
 
     # ---- reads ----
     def _all_open(self) -> list[stripe.Invoice]:
-        return retry_read(lambda: list(stripe.Invoice.list(limit=100, status="open").auto_paging_iter()))
+        return retry_read(lambda: list(
+            stripe.Invoice.list(limit=100, status="open", expand=["data.customer"]).auto_paging_iter()))
 
     def _to_invoice(self, inv: stripe.Invoice) -> Invoice:
         meta = _meta(inv.metadata)
         invoice_id = meta.get("invoice_id") or inv.number or inv.id
         self._ids[invoice_id] = inv.id
+        # A finalized invoice freezes customer_email; the Customer object is the live contact.
+        cust = inv.customer if not isinstance(inv.customer, str) else None
+        client_email = (getattr(cust, "email", None) or inv.customer_email or "") if cust else (inv.customer_email or "")
+        client_name = (getattr(cust, "name", None) or inv.customer_name or "") if cust else (inv.customer_name or "")
         if meta.get("due_date"):
             due = date.fromisoformat(meta["due_date"])
         elif inv.due_date:
@@ -43,8 +48,8 @@ class StripeLedger(Ledger):
             due = datetime.fromtimestamp(inv.created, tz=timezone.utc).date()
         return Invoice(
             invoice_id=invoice_id,
-            client_email=inv.customer_email or "",
-            client_name=inv.customer_name or "",
+            client_email=client_email,
+            client_name=client_name,
             amount_due=inv.amount_remaining / 100,
             amount_total=inv.total / 100,
             due_date=due,
@@ -60,9 +65,10 @@ class StripeLedger(Ledger):
     def get(self, invoice_id: str) -> Invoice:
         # Re-read live every time: this is the paid-since-rehearsal check.
         if invoice_id in self._ids:
-            inv = retry_read(lambda: stripe.Invoice.retrieve(self._ids[invoice_id]))
+            inv = retry_read(lambda: stripe.Invoice.retrieve(self._ids[invoice_id], expand=["customer"]))
             return self._to_invoice(inv)
-        for inv in retry_read(lambda: list(stripe.Invoice.list(limit=100).auto_paging_iter())):
+        for inv in retry_read(lambda: list(
+                stripe.Invoice.list(limit=100, expand=["data.customer"]).auto_paging_iter())):
             meta = _meta(inv.metadata)
             if (meta.get("invoice_id") or inv.number or inv.id) == invoice_id:
                 return self._to_invoice(inv)

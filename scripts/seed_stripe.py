@@ -1,7 +1,7 @@
 """Seed Stripe test mode with the demo invoice: $3,400, 19 days overdue, INV-0042.
 Test-data setup, not agent behaviour. Idempotent: skips if the invoice_id already exists.
 
-  python scripts/seed_stripe.py [--client-email you+client@gmail.com] [--days-overdue 19] [--amount 3400]
+  python scripts/seed_stripe.py [--client-email stmallela.us01@gmail.com] [--days-overdue 19] [--amount 3400]
 """
 from __future__ import annotations
 import argparse
@@ -21,13 +21,13 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--invoice-id", default="INV-0042")
     ap.add_argument("--client-name", default="Marlow & Finch Studio")
-    ap.add_argument("--client-email", default=None)
+    ap.add_argument("--client-email", default="stmallela.us01@gmail.com")
     ap.add_argument("--amount", type=float, default=3400.0)
     ap.add_argument("--days-overdue", type=int, default=19)
     a = ap.parse_args()
 
     stripe.api_key = env("STRIPE_TEST_KEY")
-    client_email = a.client_email or env("FREELANCER_EMAIL").replace("@", "+client@", 1)
+    client_email = a.client_email
 
     for inv in stripe.Invoice.list(limit=100).auto_paging_iter():
         if _meta(inv.metadata).get("invoice_id") != a.invoice_id:
