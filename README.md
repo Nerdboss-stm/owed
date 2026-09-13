@@ -68,7 +68,7 @@ Ten seeded scenarios, each asserting end state in the apps, not just agent outpu
 | same run executed twice | second run 0 sends | Gmail 1 sent, Stripe link 1, Calendar 0, Slack 3, refused: already_sent | Gmail 1 total | ✅ |
 | verifier catches discount in draft | refused before tap | Gmail 0 sent, Stripe link 0, Calendar 0, Slack 1, refused: verifier_discount | Gmail 0 sent | ✅ |
 
-_Last eval run 2026-09-13 14:55 (online drafts): 10/10 pass._
+_Last eval run 2026-09-13 15:14 (online drafts): 10/10 pass._
 <!-- EVALS:END -->
 
 Full trace of one real run, tap to send, end state asserted: [traces/live-clean-2.jsonl](traces/live-clean-2.jsonl). Run again a minute later and it refuses with `already_sent`.
