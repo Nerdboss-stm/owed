@@ -1,4 +1,4 @@
 {
-  "url": "https://blocks-asks-single-diesel.trycloudflare.com",
-  "note": "Be the client runs on the freelancer's machine (ui/client_server.py, port 8766) behind a cloudflared quick tunnel. Update this file and redeploy when the tunnel URL changes."
+  "url": "https://vector-addressing-computation-wallet.trycloudflare.com",
+  "note": "Be the client and the desks run on the freelancer's machine (ui/client_server.py, port 8766) behind a cloudflared quick tunnel. Update this file and redeploy when the tunnel URL changes."
 }

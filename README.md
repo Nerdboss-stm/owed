@@ -28,7 +28,7 @@ Rehearse in a sandbox, execute behind a gate. The demo moment is the agent refus
 Three surfaces sit on the same loop. Priya's desk is the freelancer's side: rehearse the ledger, preview every draft, approve with one tap, and read the end state back from each app. Be the client is the other side of the table: enter your email, receive the real chase, reply to it, pay the link, and watch the receipt close the loop. Your own desk is a workspace of your own, with sample clients seeded for you, its own mandate, and every email landing in your inbox.
 
 - Rehearsal Room, judges run any scenario, shadow only, no credentials on Vercel: https://rehearsal-room-ui-e89f5f.vercel.app
-- Be the client, enter your email and get chased for real after you approve, runs on the freelancer's machine behind a tunnel: https://blocks-asks-single-diesel.trycloudflare.com
+- Be the client, enter your email and get chased for real after you approve, runs on the freelancer's machine behind a tunnel: https://vector-addressing-computation-wallet.trycloudflare.com
 
 ## 2. External apps used
 
