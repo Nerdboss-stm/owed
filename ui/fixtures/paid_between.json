@@ -1,0 +1,181 @@
+{
+  "scenario": "paid_between",
+  "order": 2,
+  "title": "paid between rehearsal and send",
+  "description": "Rehearsal drafts the step-2 chase. While the plan waits for the tap, $3,400 lands in Stripe. Re-verify catches it.",
+  "expected": "aborted",
+  "source": "fixture",
+  "cached": true,
+  "run_id": "rehearsal-paid_between-140211",
+  "created_at": "2026-09-13T14:02:11",
+  "today": "2026-09-13",
+  "invoices": [
+    {
+      "invoice_id": "INV-0042",
+      "client_name": "Dan Reyes",
+      "client_email": "dan@northwindlabs.com",
+      "amount_due": 3400.0,
+      "amount_total": 3400.0,
+      "due_date": "2026-08-25",
+      "days_overdue": 19,
+      "paid": false,
+      "last_chased_step": 0,
+      "thread_state": "none",
+      "thread_id": "thr-8f21"
+    }
+  ],
+  "intents": [],
+  "refusals": [
+    {
+      "invoice_id": "INV-0042",
+      "step": 2,
+      "reason": "paid",
+      "detail": "paid since rehearsal ($3,400 received 14:07)"
+    }
+  ],
+  "end_state": [
+    {
+      "app": "stripe",
+      "expected": 0,
+      "actual": 0,
+      "detail": "no payment link created"
+    },
+    {
+      "app": "gmail",
+      "expected": 0,
+      "actual": 0,
+      "detail": "nothing sent"
+    },
+    {
+      "app": "calendar",
+      "expected": 0,
+      "actual": 0,
+      "detail": ""
+    },
+    {
+      "app": "slack",
+      "expected": 1,
+      "actual": 1,
+      "detail": "ABORTED: paid since rehearsal"
+    }
+  ],
+  "trace": [
+    {
+      "ts": "2026-09-13T14:02:11",
+      "run_id": "rehearsal-paid_between-140211",
+      "phase": "read_ledger",
+      "invoice_id": "INV-0042",
+      "decision": "ledger: INV-0042 $3,400 open, due 2026-08-25, 19 days overdue, last chased step 0",
+      "data": {
+        "amount_due": 3400.0,
+        "days_overdue": 19
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:14",
+      "run_id": "rehearsal-paid_between-140211",
+      "phase": "read_thread",
+      "invoice_id": "INV-0042",
+      "decision": "thread thr-8f21: last client message 2026-08-20, no reply since",
+      "data": {}
+    },
+    {
+      "ts": "2026-09-13T14:02:17",
+      "run_id": "rehearsal-paid_between-140211",
+      "phase": "classify",
+      "invoice_id": "INV-0042",
+      "decision": "thread_state = none",
+      "data": {
+        "thread_state": "none"
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:20",
+      "run_id": "rehearsal-paid_between-140211",
+      "phase": "decide",
+      "invoice_id": "INV-0042",
+      "decision": "DECIDE INV-0042 step 2: 19 days overdue \u2265 day 10, thread none",
+      "data": {
+        "step": 2
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:23",
+      "run_id": "rehearsal-paid_between-140211",
+      "phase": "draft",
+      "invoice_id": "INV-0042",
+      "decision": "DRAFT INV-0042 step 2: actor wrote 71 words, amount $3,400 from ledger",
+      "data": {}
+    },
+    {
+      "ts": "2026-09-13T14:02:27",
+      "run_id": "rehearsal-paid_between-140211",
+      "phase": "verify",
+      "invoice_id": "INV-0042",
+      "decision": "VERIFY INV-0042 step 2: PASS",
+      "data": {
+        "pass": true
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:30",
+      "run_id": "rehearsal-paid_between-140211",
+      "phase": "rehearsal_done",
+      "invoice_id": null,
+      "decision": "REHEARSAL DONE: would send 1, refused 0",
+      "data": {}
+    },
+    {
+      "ts": "2026-09-13T14:02:33",
+      "run_id": "rehearsal-paid_between-140211",
+      "phase": "posted_plan",
+      "invoice_id": null,
+      "decision": "POSTED plan to Slack: would send 1, refused 0, waiting for tap",
+      "data": {}
+    },
+    {
+      "ts": "2026-09-13T14:02:36",
+      "run_id": "rehearsal-paid_between-140211",
+      "phase": "tap",
+      "invoice_id": null,
+      "decision": "TAP received \u2705 14:07:40",
+      "data": {}
+    },
+    {
+      "ts": "2026-09-13T14:02:39",
+      "run_id": "rehearsal-paid_between-140211",
+      "phase": "reverify",
+      "invoice_id": "INV-0042",
+      "decision": "REVERIFY INV-0042: ledger now paid=True, amount_due $0 (was $3,400)",
+      "data": {
+        "paid": true
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:43",
+      "run_id": "rehearsal-paid_between-140211",
+      "phase": "abort",
+      "invoice_id": "INV-0042",
+      "decision": "REFUSED INV-0042 step 2: paid since rehearsal ($3,400 received 14:07)",
+      "data": {
+        "reason": "paid"
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:46",
+      "run_id": "rehearsal-paid_between-140211",
+      "phase": "assert",
+      "invoice_id": null,
+      "decision": "ASSERT gmail 0/0 stripe 0/0 slack 1/1 \u2192 OK",
+      "data": {}
+    },
+    {
+      "ts": "2026-09-13T14:02:49",
+      "run_id": "rehearsal-paid_between-140211",
+      "phase": "done",
+      "invoice_id": null,
+      "decision": "DONE: sent 0, refused 1, aborted 1",
+      "data": {}
+    }
+  ]
+}

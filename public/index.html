@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OWED · Rehearsal Room</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script>
+  tailwind.config = {
+    theme: { extend: {
+      colors: { ink: '#0a0e14', panel: '#10161f', edge: '#1f2a37', mute: '#8b98a8', text: '#e6edf3',
+                ok: '#3fb950', bad: '#f85149', warn: '#d29922', info: '#58a6ff' },
+      fontFamily: { mono: ['ui-monospace','SFMono-Regular','Menlo','JetBrains Mono','monospace'] }
+    } }
+  };
+</script>
+<style>
+  html { color-scheme: dark; }
+  body { background:#0a0e14; color:#e6edf3; font-size:15px; }
+  ::-webkit-scrollbar { width:8px; height:8px; } ::-webkit-scrollbar-thumb { background:#2a3644; border-radius:4px; }
+  .panel { background:#10161f; border:1px solid #1f2a37; border-radius:8px; }
+  .chip { display:inline-flex; align-items:center; gap:.35rem; padding:.1rem .5rem; border-radius:4px; font-size:12px; font-weight:600; letter-spacing:.02em; text-transform:uppercase; border:1px solid transparent; }
+  .chip-ok   { color:#3fb950; border-color:#1f4d2b; background:#0f2417; }
+  .chip-bad  { color:#f85149; border-color:#5a1f1f; background:#2a1010; }
+  .chip-warn { color:#d29922; border-color:#4d3a10; background:#241c08; }
+  .chip-info { color:#58a6ff; border-color:#1f3a5a; background:#0d1b2e; }
+  .chip-mute { color:#8b98a8; border-color:#2a3644; background:#131b25; }
+  .pick { border:1px solid #1f2a37; background:#10161f; color:#c9d4e0; border-radius:6px; padding:.45rem .7rem; text-align:left; font-size:13.5px; line-height:1.2; transition:border-color .1s, background .1s; }
+  .pick:hover { border-color:#3a4a5c; background:#141d28; }
+  .pick.active { border-color:#58a6ff; background:#0d1b2e; color:#e6edf3; }
+  .pick .n { color:#58a6ff; font-family:ui-monospace,Menlo,monospace; font-size:12px; margin-right:.35rem; }
+  pre.mail { white-space:pre-wrap; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:13.5px; line-height:1.45; color:#c9d4e0; background:#0a0e14; border:1px solid #1f2a37; border-radius:6px; padding:.6rem .75rem; }
+  .log { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:13.5px; line-height:1.55; }
+  .log .refused { color:#f85149; } .log .ok { color:#3fb950; } .log .decide { color:#58a6ff; } .log .warn { color:#d29922; }
+  .rowline { border-bottom:1px solid #161e29; }
+  .spin { display:inline-block; width:12px; height:12px; border:2px solid #2a3644; border-top-color:#58a6ff; border-radius:50%; animation:sp .8s linear infinite; }
+  @keyframes sp { to { transform:rotate(360deg);} }
+  .kbd { font-family:ui-monospace,Menlo,monospace; font-size:11px; color:#8b98a8; border:1px solid #2a3644; border-radius:3px; padding:0 .3rem; }
+</style>
+</head>
+<body class="min-h-screen">
+<div class="mx-auto max-w-[1840px] px-5 py-4 flex flex-col gap-3">
+
+  <!-- header -->
+  <header class="flex items-end justify-between gap-6">
+    <div>
+      <div class="flex items-baseline gap-3">
+        <h1 class="text-[22px] font-bold tracking-tight">OWED <span class="text-mute font-medium">· Rehearsal Room</span></h1>
+        <span class="text-mute text-[13px]">shadow copy of ledger + inbox · zero live writes from this page</span>
+      </div>
+      <p class="text-[14px] text-[#b7c2cf] mt-1">Rehearse in a sandbox, execute behind a gate. Every email is rehearsed against a shadow inbox and checked by a second model before it is allowed to send.</p>
+    </div>
+    <div class="flex items-center gap-2 shrink-0">
+      <span id="status" class="chip chip-mute">loading</span>
+      <button id="liveBtn" class="pick !py-1.5 !px-3 text-[13px]" title="Run planner → drafter → verifier against Shadow adapters (40 s budget). Falls back to the precomputed plan.">
+        <span id="liveSpin" class="spin hidden mr-1"></span>Rehearse live (shadow)
+      </button>
+    </div>
+  </header>
+
+  <!-- scenario picker -->
+  <nav id="picker" class="grid grid-cols-5 gap-2"></nav>
+
+  <!-- scenario strip -->
+  <section id="strip" class="panel px-4 py-2.5 flex items-center gap-5 min-h-[52px]">
+    <div class="text-mute text-[13px]">select a scenario</div>
+  </section>
+
+  <!-- main grid -->
+  <div class="grid grid-cols-3 gap-3 items-start">
+    <div class="col-span-2 flex flex-col gap-3">
+      <section class="panel">
+        <div class="flex items-center justify-between px-4 py-2 border-b border-edge">
+          <h2 class="text-[13px] font-bold tracking-wider text-ok">WILL SEND <span id="sendCount" class="text-mute font-mono font-normal ml-1"></span></h2>
+          <span class="text-mute text-[12px]">intents the executor would perform, each with an idempotency key</span>
+        </div>
+        <div id="intents" class="p-3 flex flex-col gap-2"></div>
+      </section>
+      <section class="panel">
+        <div class="flex items-center justify-between px-4 py-2 border-b border-edge">
+          <h2 class="text-[13px] font-bold tracking-wider text-bad">REFUSED <span id="refuseCount" class="text-mute font-mono font-normal ml-1"></span></h2>
+          <span class="text-mute text-[12px]">what the agent declined to do, and why</span>
+        </div>
+        <div id="refusals" class="p-3 flex flex-col gap-2"></div>
+      </section>
+    </div>
+
+    <div class="flex flex-col gap-3">
+      <section class="panel">
+        <div class="flex items-center justify-between px-4 py-2 border-b border-edge">
+          <h2 class="text-[13px] font-bold tracking-wider">END STATE <span id="endSummary" class="text-mute font-mono font-normal ml-1"></span></h2>
+          <span class="text-mute text-[12px]">asserted per app after execute</span>
+        </div>
+        <div id="endstate" class="px-3 py-1"></div>
+      </section>
+      <section class="panel">
+        <div class="flex items-center justify-between px-4 py-2 border-b border-edge">
+          <h2 class="text-[13px] font-bold tracking-wider">TRACE <span id="traceCount" class="text-mute font-mono font-normal ml-1"></span></h2>
+          <span class="text-mute text-[12px]">one line per phase</span>
+        </div>
+        <div id="trace" class="px-3 py-2 log max-h-[420px] overflow-y-auto"></div>
+      </section>
+    </div>
+  </div>
+
+  <!-- last real run -->
+  <section class="panel">
+    <div class="flex items-center justify-between px-4 py-2 border-b border-edge">
+      <h2 class="text-[13px] font-bold tracking-wider">LAST REAL RUN <span id="lastMeta" class="text-mute font-mono font-normal ml-1"></span></h2>
+      <div class="flex items-center gap-3 text-mute text-[12px]">
+        <span>run.py on the freelancer's machine, behind the Slack ✅, pushed to Vercel Blob after assert</span>
+        <button id="lastRefresh" class="pick !py-0.5 !px-2 text-[12px]">refresh</button>
+      </div>
+    </div>
+    <div id="lastrun" class="p-3"></div>
+  </section>
+
+  <div class="text-mute text-[12px] flex gap-4 justify-end">
+    <span><span class="kbd">1</span>–<span class="kbd">9</span> <span class="kbd">0</span> pick scenario</span>
+    <span><span class="kbd">L</span> rehearse live</span>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const money = (n) => (n == null || n === '') ? '' : '$' + Number(n).toLocaleString('en-US', {maximumFractionDigits: 2});
+  const KIND = { send_email: ['chip-info','EMAIL'], create_event: ['chip-warn','CALENDAR'], create_payment_link: ['chip-info','STRIPE LINK'], post_chat: ['chip-mute','SLACK'] };
+  const APP = { stripe: 'Stripe', gmail: 'Gmail', calendar: 'Calendar', slack: 'Slack', ledger_json: 'ledger.json' };
+
+  let scenarios = [], current = null, loading = false;
+
+  function setStatus(text, cls) { const s = $('status'); s.textContent = text; s.className = 'chip ' + cls; }
+
+  async function getJSON(url) {
+    const r = await fetch(url, { cache: 'no-store' });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.error || (r.status + ' ' + r.statusText));
+    return data;
+  }
+
+  // ---------- picker ----------
+  function renderPicker() {
+    $('picker').innerHTML = scenarios.map((s, i) =>
+      `<button class="pick${s.name === current ? ' active' : ''}" data-name="${esc(s.name)}" title="${esc(s.description)}">
+         <span class="n">${(i + 1) % 10}</span>${esc(s.title)}
+       </button>`).join('');
+    $('picker').querySelectorAll('button').forEach(b => b.addEventListener('click', () => select(b.dataset.name)));
+  }
+
+  // ---------- plan rendering ----------
+  function renderStrip(plan, meta) {
+    const inv = (plan.invoices || []).map(i => `
+      <div class="flex items-center gap-2 font-mono text-[13px]">
+        <span class="text-text font-semibold">${esc(i.invoice_id)}</span>
+        <span class="text-mute">${esc(i.client_name || i.client_email || '')}</span>
+        <span class="chip chip-mute">${esc(money(i.amount_due))}${i.amount_total && i.amount_total !== i.amount_due ? ' of ' + esc(money(i.amount_total)) : ''}</span>
+        <span class="chip chip-mute">${esc(i.days_overdue)}d overdue</span>
+        <span class="chip ${i.thread_state && i.thread_state !== 'none' ? 'chip-warn' : 'chip-mute'}">thread ${esc(i.thread_state || 'none')}</span>
+        <span class="chip chip-mute">last chased ${esc(i.last_chased_step ?? 0)}</span>
+      </div>`).join('');
+    $('strip').innerHTML = `
+      <div class="min-w-[340px]">
+        <div class="text-[15px] font-semibold">${esc(meta?.title || plan.title || plan.scenario)}</div>
+        <div class="text-mute text-[13px] mt-0.5">${esc(meta?.description || plan.description || '')}</div>
+      </div>
+      <div class="border-l border-edge pl-5 flex flex-col gap-1.5">${inv || '<span class="text-mute text-[13px]">no invoice facts in plan</span>'}</div>
+      <div class="ml-auto text-right shrink-0">
+        <div class="text-mute text-[11px] uppercase tracking-wider">expected</div>
+        <div class="text-[13.5px]">${esc(meta?.expected || plan.expected || '—')}</div>
+      </div>`;
+  }
+
+  function renderIntents(list) {
+    $('sendCount').textContent = list.length;
+    if (!list.length) { $('intents').innerHTML = `<div class="text-mute text-[13.5px] px-1 py-2">Nothing. The agent would send no email, create no event, post no link.</div>`; return; }
+    $('intents').innerHTML = list.map(it => {
+      const [cls, label] = KIND[it.kind] || ['chip-mute', it.kind];
+      const p = it.payload || {};
+      let body = '';
+      if (it.kind === 'send_email') body = `
+        <div class="grid grid-cols-[64px_1fr] gap-x-3 gap-y-0.5 text-[13.5px] mt-1.5">
+          <span class="text-mute">to</span><span class="font-mono">${esc(p.to)}</span>
+          <span class="text-mute">subject</span><span>${esc(p.subject)}</span>
+          <span class="text-mute">amount</span><span class="font-mono">${esc(money(p.amount))} <span class="text-mute">from ledger</span></span>
+        </div>
+        <pre class="mail mt-2">${esc(p.body)}</pre>`;
+      else if (it.kind === 'create_event') body = `
+        <div class="grid grid-cols-[64px_1fr] gap-x-3 gap-y-0.5 text-[13.5px] mt-1.5">
+          <span class="text-mute">title</span><span>${esc(p.title)}</span>
+          <span class="text-mute">start</span><span class="font-mono">${esc(p.start_iso)}</span>
+          <span class="text-mute">attendee</span><span class="font-mono">${esc(p.attendee)}</span>
+        </div>`;
+      else if (it.kind === 'create_payment_link') body = `<div class="text-[13.5px] mt-1.5"><span class="text-mute">amount</span> <span class="font-mono">${esc(money(p.amount))}</span> <span class="text-mute">· created inside the executor only, never by the drafter</span></div>`;
+      else if (it.kind === 'post_chat') body = `<pre class="mail mt-2">${esc(p.text)}</pre>`;
+      else body = `<pre class="mail mt-2">${esc(JSON.stringify(p, null, 2))}</pre>`;
+      return `
+        <div class="rounded-md border border-edge bg-ink/40 px-3 py-2">
+          <div class="flex items-center gap-2">
+            <span class="chip ${cls}">${esc(label)}</span>
+            <span class="font-semibold">${esc(it.invoice_id)}</span>
+            <span class="text-mute">step ${esc(it.step)}</span>
+            <span class="font-mono text-[12px] text-mute ml-1">key ${esc(it.idempotency_key)}</span>
+            ${it.requires_tap ? '<span class="chip chip-warn ml-auto">requires ✅ tap</span>' : ''}
+          </div>${body}
+        </div>`;
+    }).join('');
+  }
+
+  function renderRefusals(list) {
+    $('refuseCount').textContent = list.length;
+    if (!list.length) { $('refusals').innerHTML = `<div class="text-mute text-[13.5px] px-1 py-2">None. Every draft passed the deterministic checks and the verifier.</div>`; return; }
+    $('refusals').innerHTML = list.map(r => `
+      <div class="rounded-md border border-[#5a1f1f] bg-[#1a0d0d] px-3 py-2">
+        <div class="flex items-center gap-2 log">
+          <span class="refused font-bold">REFUSED ${esc(r.invoice_id)} step ${esc(r.step)}</span>
+          <span class="chip chip-bad ml-auto">${esc(r.reason)}</span>
+        </div>
+        <div class="text-[13.5px] mt-1 text-[#e0c4c4]">${esc(r.detail)}</div>
+      </div>`).join('');
+  }
+
+  function renderEndState(list, target, summaryEl) {
+    const rows = Array.isArray(list) ? list : [];
+    if (!rows.length) { target.innerHTML = `<div class="text-mute text-[13px] py-2">Not asserted in this plan. The asserter reads each app back after execute.</div>`; if (summaryEl) summaryEl.textContent = ''; return; }
+    const okN = rows.filter(r => r.expected === r.actual).length;
+    if (summaryEl) { summaryEl.textContent = `${okN}/${rows.length}`; summaryEl.className = 'font-mono font-normal ml-1 ' + (okN === rows.length ? 'text-ok' : 'text-bad'); }
+    target.innerHTML = rows.map(r => {
+      const ok = r.expected === r.actual;
+      return `
+        <div class="rowline flex items-center gap-3 py-1.5">
+          <span class="w-3 h-3 rounded-full shrink-0" style="background:${ok ? '#3fb950' : '#f85149'}"></span>
+          <span class="w-[78px] font-semibold text-[13.5px]">${esc(APP[r.app] || r.app)}</span>
+          <span class="font-mono text-[13px] ${ok ? 'text-ok' : 'text-bad'}">${esc(r.actual)}<span class="text-mute">/${esc(r.expected)}</span></span>
+          <span class="text-mute text-[12.5px] truncate" title="${esc(r.detail)}">${esc(r.detail || '')}</span>
+        </div>`;
+    }).join('');
+  }
+
+  function traceClass(t) {
+    const d = (t.decision || '').toUpperCase();
+    if (t.phase === 'abort' || d.startsWith('REFUSED') || d.includes('ABORTED')) return 'refused';
+    if (d.includes('PASS') || d.includes('→ OK') || t.phase === 'done') return 'ok';
+    if (t.phase === 'decide' || t.phase === 'tap' || t.phase === 'posted_plan') return 'decide';
+    if (t.phase === 'reverify') return 'warn';
+    return '';
+  }
+
+  function renderTrace(lines, target, countEl) {
+    const rows = Array.isArray(lines) ? lines : [];
+    if (countEl) countEl.textContent = rows.length ? rows.length : '';
+    if (!rows.length) { target.innerHTML = `<div class="text-mute text-[13px] py-1">no trace lines</div>`; return; }
+    target.innerHTML = rows.map(t => {
+      const time = (t.ts || '').replace('T', ' ').slice(11, 19);
+      return `<div class="flex gap-2 rowline py-0.5">
+        <span class="text-mute shrink-0 w-[62px]">${esc(time)}</span>
+        <span class="text-mute shrink-0 w-[112px]">${esc(t.phase)}</span>
+        <span class="${traceClass(t)}">${esc(t.decision)}</span>
+      </div>`;
+    }).join('');
+  }
+
+  function renderPlan(plan) {
+    const meta = scenarios.find(s => s.name === plan.scenario);
+    renderStrip(plan, meta);
+    renderIntents(plan.intents || []);
+    renderRefusals(plan.refusals || []);
+    renderEndState(plan.end_state, $('endstate'), $('endSummary'));
+    renderTrace(plan.trace, $('trace'), $('traceCount'));
+    const src = plan.source || (plan.cached ? 'precomputed' : 'live');
+    const label = { live: 'LIVE SHADOW', precomputed: 'PRECOMPUTED', fixture: 'FIXTURE' }[src] || src.toUpperCase();
+    const cls = src === 'live' ? 'chip-ok' : src === 'fixture' ? 'chip-warn' : 'chip-info';
+    setStatus(`${label} · ${plan.served_ms ?? '?'} ms${plan.live_error ? ' · live fell back' : ''}`, cls);
+    $('status').title = plan.live_error ? 'live rehearsal: ' + plan.live_error : `run ${plan.run_id || ''}`;
+  }
+
+  async function select(name, live = false) {
+    if (loading) return;
+    loading = true; current = name; renderPicker();
+    location.hash = name;
+    setStatus(live ? 'rehearsing live…' : 'loading…', 'chip-mute');
+    $('liveSpin').classList.toggle('hidden', !live);
+    try {
+      renderPlan(await getJSON(`/api/rehearse?scenario=${encodeURIComponent(name)}${live ? '&live=1' : ''}`));
+    } catch (e) {
+      setStatus('error', 'chip-bad');
+      $('intents').innerHTML = `<div class="text-bad text-[13.5px]">${esc(e.message)}</div>`;
+      $('refusals').innerHTML = ''; $('trace').innerHTML = ''; $('endstate').innerHTML = '';
+    } finally { loading = false; $('liveSpin').classList.add('hidden'); }
+  }
+
+  // ---------- last real run ----------
+  async function loadLastRun() {
+    $('lastMeta').textContent = '…';
+    let d;
+    try { d = await getJSON('/api/last_run'); } catch (e) { d = { available: false, reason: e.message }; }
+    if (!d.available) {
+      $('lastMeta').textContent = '';
+      $('lastrun').innerHTML = `<div class="text-mute text-[13.5px]">No real run pushed yet. <span class="text-[#b7c2cf]">${esc(d.reason || '')}</span></div>`;
+      return;
+    }
+    const plan = d.plan || {}, trace = d.trace || [];
+    const intents = plan.intents || [], refusals = plan.refusals || [];
+    const executed = trace.filter(t => t.phase === 'execute').length;
+    const aborted = trace.filter(t => t.phase === 'abort').length;
+    const when = (d.uploaded_at || plan.created_at || '').replace('T', ' ').slice(0, 19);
+    $('lastMeta').textContent = `${d.run_id || ''} · ${when}`;
+    $('lastrun').innerHTML = `
+      <div class="grid grid-cols-3 gap-3">
+        <div class="flex flex-col gap-2">
+          <div class="flex gap-2 flex-wrap">
+            <span class="chip chip-ok">sent ${executed || intents.length}</span>
+            <span class="chip chip-bad">refused ${refusals.length}</span>
+            ${aborted ? `<span class="chip chip-bad">aborted ${aborted}</span>` : ''}
+            <span class="chip chip-mute">intents ${intents.length}</span>
+          </div>
+          <div id="lastEnd"></div>
+          ${refusals.map(r => `<div class="log"><span class="refused font-bold">REFUSED ${esc(r.invoice_id)} step ${esc(r.step)}</span> <span class="text-[#e0c4c4]">${esc(r.detail)}</span></div>`).join('')}
+        </div>
+        <div id="lastTrace" class="col-span-2 log max-h-[260px] overflow-y-auto rounded-md border border-edge bg-ink/40 px-3 py-1"></div>
+      </div>`;
+    renderEndState(plan.end_state || d.end_state, $('lastEnd'), null);
+    renderTrace(trace, $('lastTrace'), null);
+  }
+
+  // ---------- boot ----------
+  $('liveBtn').addEventListener('click', () => current && select(current, true));
+  $('lastRefresh').addEventListener('click', loadLastRun);
+  document.addEventListener('keydown', (e) => {
+    if (e.target.tagName === 'INPUT') return;
+    if (/^[0-9]$/.test(e.key)) { const i = e.key === '0' ? 9 : Number(e.key) - 1; if (scenarios[i]) select(scenarios[i].name); }
+    if (e.key === 'l' || e.key === 'L') current && select(current, true);
+  });
+
+  (async () => {
+    try {
+      scenarios = (await getJSON('/api/scenarios')).scenarios || [];
+    } catch (e) { setStatus('scenarios failed', 'chip-bad'); $('strip').innerHTML = `<div class="text-bad text-[13.5px]">${esc(e.message)}</div>`; return; }
+    renderPicker();
+    const fromHash = location.hash.replace('#', '');
+    const first = scenarios.find(s => s.name === fromHash) || scenarios[0];
+    if (first) select(first.name);
+    loadLastRun();
+    setInterval(loadLastRun, 30000);
+  })();
+})();
+</script>
+</body>
+</html>

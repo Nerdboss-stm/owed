@@ -1,0 +1,119 @@
+{
+  "scenario": "twice",
+  "order": 9,
+  "title": "same run executed twice",
+  "description": "run.py again on the same ledger state. state/sent.json already holds INV-0042:2. Second run sends nothing.",
+  "expected": "second run 0 sends",
+  "source": "fixture",
+  "cached": true,
+  "run_id": "rehearsal-twice-140211",
+  "created_at": "2026-09-13T14:02:11",
+  "today": "2026-09-13",
+  "invoices": [
+    {
+      "invoice_id": "INV-0042",
+      "client_name": "Dan Reyes",
+      "client_email": "dan@northwindlabs.com",
+      "amount_due": 3400.0,
+      "amount_total": 3400.0,
+      "due_date": "2026-09-01",
+      "days_overdue": 12,
+      "paid": false,
+      "last_chased_step": 2,
+      "thread_state": "none",
+      "thread_id": "thr-8f21"
+    }
+  ],
+  "intents": [],
+  "refusals": [
+    {
+      "invoice_id": "INV-0042",
+      "step": 2,
+      "reason": "already_sent",
+      "detail": "idempotency key INV-0042:2 found in state/sent.json (sent 14:09:02 first run)"
+    }
+  ],
+  "end_state": [
+    {
+      "app": "stripe",
+      "expected": 1,
+      "actual": 1,
+      "detail": "one link total, from first run"
+    },
+    {
+      "app": "gmail",
+      "expected": 1,
+      "actual": 1,
+      "detail": "one email total, from first run"
+    },
+    {
+      "app": "calendar",
+      "expected": 0,
+      "actual": 0,
+      "detail": ""
+    },
+    {
+      "app": "slack",
+      "expected": 1,
+      "actual": 1,
+      "detail": "second run summary: 0 sends"
+    }
+  ],
+  "trace": [
+    {
+      "ts": "2026-09-13T14:02:11",
+      "run_id": "rehearsal-twice-140211",
+      "phase": "read_ledger",
+      "invoice_id": "INV-0042",
+      "decision": "ledger: INV-0042 $3,400 open, due 2026-09-01, 12 days overdue, last chased step 2",
+      "data": {
+        "amount_due": 3400.0,
+        "days_overdue": 12
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:14",
+      "run_id": "rehearsal-twice-140211",
+      "phase": "read_thread",
+      "invoice_id": "INV-0042",
+      "decision": "thread thr-8f21: our step-2 email 14:09, no reply",
+      "data": {}
+    },
+    {
+      "ts": "2026-09-13T14:02:17",
+      "run_id": "rehearsal-twice-140211",
+      "phase": "classify",
+      "invoice_id": "INV-0042",
+      "decision": "thread_state = none",
+      "data": {
+        "thread_state": "none"
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:20",
+      "run_id": "rehearsal-twice-140211",
+      "phase": "decide",
+      "invoice_id": "INV-0042",
+      "decision": "REFUSED INV-0042 step 2: already_sent \u2014 key INV-0042:2 in state/sent.json",
+      "data": {
+        "reason": "already_sent"
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:23",
+      "run_id": "rehearsal-twice-140211",
+      "phase": "rehearsal_done",
+      "invoice_id": null,
+      "decision": "REHEARSAL DONE: would send 0, refused 1",
+      "data": {}
+    },
+    {
+      "ts": "2026-09-13T14:02:27",
+      "run_id": "rehearsal-twice-140211",
+      "phase": "assert",
+      "invoice_id": null,
+      "decision": "ASSERT gmail 1 total (not 2), stripe links 1 \u2192 OK",
+      "data": {}
+    }
+  ]
+}

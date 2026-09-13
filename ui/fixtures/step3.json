@@ -1,0 +1,164 @@
+{
+  "scenario": "step3",
+  "order": 8,
+  "title": "step 3 reached",
+  "description": "Day 21, step 2 already sent on day 10. Step 3 proposes a call. Nothing past step 2 sends without the \u2705 tap.",
+  "expected": "waits for tap; after tap 1 event",
+  "source": "fixture",
+  "cached": true,
+  "run_id": "rehearsal-step3-140211",
+  "created_at": "2026-09-13T14:02:11",
+  "today": "2026-09-13",
+  "invoices": [
+    {
+      "invoice_id": "INV-0042",
+      "client_name": "Dan Reyes",
+      "client_email": "dan@northwindlabs.com",
+      "amount_due": 3400.0,
+      "amount_total": 3400.0,
+      "due_date": "2026-08-23",
+      "days_overdue": 21,
+      "paid": false,
+      "last_chased_step": 2,
+      "thread_state": "none",
+      "thread_id": "thr-8f21"
+    }
+  ],
+  "intents": [
+    {
+      "kind": "create_event",
+      "invoice_id": "INV-0042",
+      "step": 3,
+      "payload": {
+        "title": "INV-0042 \u2014 call with Dan Reyes",
+        "start_iso": "2026-09-15T10:30:00-04:00",
+        "attendee": "dan@northwindlabs.com"
+      },
+      "idempotency_key": "INV-0042:3",
+      "requires_tap": true
+    },
+    {
+      "kind": "send_email",
+      "invoice_id": "INV-0042",
+      "step": 3,
+      "payload": {
+        "to": "dan@northwindlabs.com",
+        "subject": "Invoice INV-0042 \u2014 $3,400 past due",
+        "body": "Hi Dan,\n\nInvoice INV-0042 for $3,400 is now three weeks past due and I have not heard back. Can we take ten minutes to sort it out? I am holding Tue Sep 15, 10:30 AM ET for a call; the invite is attached.\n\nMaya",
+        "amount": 3400.0,
+        "thread_id": "thr-8f21"
+      },
+      "idempotency_key": "INV-0042:3",
+      "requires_tap": true
+    }
+  ],
+  "refusals": [
+    {
+      "invoice_id": "INV-0042",
+      "step": 3,
+      "reason": "waiting_tap",
+      "detail": "step 3 requires \u2705 in Slack before execute; nothing sent in rehearsal"
+    }
+  ],
+  "end_state": [
+    {
+      "app": "stripe",
+      "expected": 0,
+      "actual": 0,
+      "detail": ""
+    },
+    {
+      "app": "gmail",
+      "expected": 1,
+      "actual": 1,
+      "detail": "after tap: one step-3 email"
+    },
+    {
+      "app": "calendar",
+      "expected": 1,
+      "actual": 1,
+      "detail": "after tap: one event Sep 15 10:30"
+    },
+    {
+      "app": "slack",
+      "expected": 1,
+      "actual": 1,
+      "detail": "plan posted, waiting for tap"
+    }
+  ],
+  "trace": [
+    {
+      "ts": "2026-09-13T14:02:11",
+      "run_id": "rehearsal-step3-140211",
+      "phase": "read_ledger",
+      "invoice_id": "INV-0042",
+      "decision": "ledger: INV-0042 $3,400 open, due 2026-08-23, 21 days overdue, last chased step 2",
+      "data": {
+        "amount_due": 3400.0,
+        "days_overdue": 21
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:14",
+      "run_id": "rehearsal-step3-140211",
+      "phase": "read_thread",
+      "invoice_id": "INV-0042",
+      "decision": "thread thr-8f21: no reply to step-2 email of 2026-09-02",
+      "data": {}
+    },
+    {
+      "ts": "2026-09-13T14:02:17",
+      "run_id": "rehearsal-step3-140211",
+      "phase": "classify",
+      "invoice_id": "INV-0042",
+      "decision": "thread_state = none",
+      "data": {
+        "thread_state": "none"
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:20",
+      "run_id": "rehearsal-step3-140211",
+      "phase": "decide",
+      "invoice_id": "INV-0042",
+      "decision": "DECIDE INV-0042 step 3: 21 days overdue \u2265 day 21, last chased 2 \u2192 propose call, REQUIRES TAP",
+      "data": {
+        "step": 3
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:23",
+      "run_id": "rehearsal-step3-140211",
+      "phase": "draft",
+      "invoice_id": "INV-0042",
+      "decision": "DRAFT INV-0042 step 3: call proposal, free slot Tue Sep 15 10:30 from shadow calendar",
+      "data": {}
+    },
+    {
+      "ts": "2026-09-13T14:02:27",
+      "run_id": "rehearsal-step3-140211",
+      "phase": "verify",
+      "invoice_id": "INV-0042",
+      "decision": "VERIFY INV-0042 step 3: no deadline promised, no threat, amount $3,400 \u2192 PASS",
+      "data": {
+        "pass": true
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:30",
+      "run_id": "rehearsal-step3-140211",
+      "phase": "rehearsal_done",
+      "invoice_id": null,
+      "decision": "REHEARSAL DONE: would send 1 + 1 event, waiting for tap 1",
+      "data": {}
+    },
+    {
+      "ts": "2026-09-13T14:02:33",
+      "run_id": "rehearsal-step3-140211",
+      "phase": "posted_plan",
+      "invoice_id": null,
+      "decision": "POSTED plan to Slack: step 3 for INV-0042 needs your \u2705",
+      "data": {}
+    }
+  ]
+}

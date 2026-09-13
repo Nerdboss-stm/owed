@@ -1,0 +1,122 @@
+{
+  "scenario": "disputed",
+  "order": 7,
+  "title": "disputed invoice",
+  "description": "Client replied: \"The second round of revisions was not in scope, we are not paying the full amount.\" Escalate to the freelancer, never argue with the client.",
+  "expected": "escalate to freelancer, no client email",
+  "source": "fixture",
+  "cached": true,
+  "run_id": "rehearsal-disputed-140211",
+  "created_at": "2026-09-13T14:02:11",
+  "today": "2026-09-13",
+  "invoices": [
+    {
+      "invoice_id": "INV-0047",
+      "client_name": "Lena Hartwig",
+      "client_email": "lena@grovecollective.org",
+      "amount_due": 2200.0,
+      "amount_total": 2200.0,
+      "due_date": "2026-08-30",
+      "days_overdue": 14,
+      "paid": false,
+      "last_chased_step": 0,
+      "thread_state": "disputes",
+      "thread_id": "thr-19dd"
+    }
+  ],
+  "intents": [
+    {
+      "kind": "post_chat",
+      "invoice_id": "INV-0047",
+      "step": 0,
+      "payload": {
+        "text": "ESCALATE INV-0047: client disputes scope (\"second round of revisions was not in scope\"). $2,200 open. Your call, no client email sent."
+      },
+      "idempotency_key": "INV-0047:0",
+      "requires_tap": false
+    }
+  ],
+  "refusals": [
+    {
+      "invoice_id": "INV-0047",
+      "step": 2,
+      "reason": "disputes",
+      "detail": "client disputes scope; escalated to freelancer, no client email"
+    }
+  ],
+  "end_state": [
+    {
+      "app": "stripe",
+      "expected": 0,
+      "actual": 0,
+      "detail": ""
+    },
+    {
+      "app": "gmail",
+      "expected": 0,
+      "actual": 0,
+      "detail": "no client email"
+    },
+    {
+      "app": "calendar",
+      "expected": 0,
+      "actual": 0,
+      "detail": ""
+    },
+    {
+      "app": "slack",
+      "expected": 1,
+      "actual": 1,
+      "detail": "escalation posted"
+    }
+  ],
+  "trace": [
+    {
+      "ts": "2026-09-13T14:02:11",
+      "run_id": "rehearsal-disputed-140211",
+      "phase": "read_ledger",
+      "invoice_id": "INV-0047",
+      "decision": "ledger: INV-0047 $2,200 open, due 2026-08-30, 14 days overdue, last chased step 0",
+      "data": {
+        "amount_due": 2200.0,
+        "days_overdue": 14
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:14",
+      "run_id": "rehearsal-disputed-140211",
+      "phase": "read_thread",
+      "invoice_id": "INV-0047",
+      "decision": "thread thr-19dd: client 2026-09-10: \"second round of revisions was not in scope, we are not paying the full amount\"",
+      "data": {}
+    },
+    {
+      "ts": "2026-09-13T14:02:17",
+      "run_id": "rehearsal-disputed-140211",
+      "phase": "classify",
+      "invoice_id": "INV-0047",
+      "decision": "thread_state = disputes",
+      "data": {
+        "thread_state": "disputes"
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:20",
+      "run_id": "rehearsal-disputed-140211",
+      "phase": "decide",
+      "invoice_id": "INV-0047",
+      "decision": "REFUSED INV-0047 step 2: disputes \u2192 escalate to freelancer, not client",
+      "data": {
+        "reason": "disputes"
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:23",
+      "run_id": "rehearsal-disputed-140211",
+      "phase": "rehearsal_done",
+      "invoice_id": null,
+      "decision": "REHEARSAL DONE: would send 0, refused 1, escalated 1",
+      "data": {}
+    }
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "rehearsal-room",
+      "runtimeExecutable": "python3",
+      "runtimeArgs": ["ui/dev_server.py", "8765"],
+      "port": 8765
+    }
+  ]
+}
