@@ -6,22 +6,37 @@
 <title>OWED · Priya's desk</title>
 <link rel="stylesheet" href="/owed.css">
 <style>
-  .top { display: flex; justify-content: space-between; align-items: center; gap: 24px; margin-bottom: 28px; }
+  .top { display: flex; justify-content: space-between; align-items: center; gap: 24px; margin-bottom: 10px; }
+  .statusline { color: #8b98a8; font-size: 16px; min-height: 24px; margin-bottom: 18px; }
+  .statusline b { color: #e6edf3; font-weight: 600; }
+  .ladder { display: flex; align-items: center; gap: 10px; margin-bottom: 22px; flex-wrap: wrap; }
+  .ladder .arrow { color: #3a4a5c; font-size: 18px; }
+  .rung { display: inline-flex; gap: 8px; align-items: baseline; padding: 8px 14px; border-radius: 999px; border: 1px solid #2a3644; background: #10161f; font-size: 14px; color: #b7c2cf; }
+  .rung b { color: #e6edf3; }
   .grid { display: grid; grid-template-columns: 1fr 340px; gap: 20px; align-items: start; }
   .stack { display: flex; flex-direction: column; gap: 20px; }
   .item { padding: 12px 0; border-bottom: 1px solid #161e29; font-size: 17px; line-height: 1.45; }
   .item:last-child { border-bottom: 0; }
   .item .why { color: #b7c2cf; }
+  .grp { margin-bottom: 6px; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; font-weight: 700; }
   .approve { display: flex; align-items: center; gap: 16px; padding: 16px 20px; border-top: 1px solid #1f2a37; }
   .src { color: #8b98a8; font-size: 13px; text-transform: none; letter-spacing: 0; font-weight: 400; }
   #overdue td:first-child { font-weight: 600; }
+  .pos { display: inline-flex; flex-direction: column; gap: 2px; align-items: flex-end; }
+  .pos .chip { font-size: 11px; }
+  .pos .nx { color: #8b98a8; font-size: 12.5px; white-space: nowrap; }
+  .pos .nx.now { color: #d29922; }
   .mandate { display: flex; gap: 14px; align-items: baseline; padding: 14px 20px; border-top: 1px solid #1f2a37; font-size: 15px; color: #b7c2cf; }
   .mandate a { font-size: 14px; white-space: nowrap; }
-  .mform { padding: 4px 20px 18px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; font-size: 14px; color: #8b98a8; }
-  .mform label { display: flex; flex-direction: column; gap: 4px; }
-  .mform input { background: #0a0e14; border: 1px solid #2a3644; border-radius: 8px; padding: 8px 10px; color: #e6edf3; font-size: 15px; font-family: inherit; }
-  .mform .full { grid-column: 1 / -1; }
+  .mform, .iform { padding: 4px 20px 18px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; font-size: 14px; color: #8b98a8; }
+  .mform label, .iform label { display: flex; flex-direction: column; gap: 4px; }
+  .mform input, .iform input { background: #0a0e14; border: 1px solid #2a3644; border-radius: 8px; padding: 8px 10px; color: #e6edf3; font-size: 15px; font-family: inherit; }
+  .full { grid-column: 1 / -1; }
   .offline { color: #d29922; font-size: 16px; margin-bottom: 20px; }
+  .apps { display: inline-flex; gap: 10px; margin-left: 10px; font-size: 13px; }
+  .apps span { color: #8b98a8; } .apps span.ok { color: #3fb950; } .apps span.bad { color: #f85149; }
+  details.inner { border-top: 0; }
+  details.inner summary { padding: 8px 0; font-weight: 700; }
 </style>
 </head>
 <body>
@@ -32,15 +47,25 @@
     <p class="lead" style="margin:0">Priya's desk: this is what the agent wants to send today, and what it refused.</p>
     <button id="rehearse" class="btn btn-go btn-lg"><span id="rehSpin" class="spin hidden"></span> Rehearse today</button>
   </div>
+  <div id="statusline" class="statusline">no rehearsal yet today</div>
   <div id="offline" class="offline hidden">the agent runtime is offline</div>
+
+  <div id="ladder" class="ladder"></div>
 
   <div class="grid">
     <div class="stack">
       <section class="card">
-        <h2>Overdue <span id="overdueSrc" class="src"></span></h2>
+        <h2>Overdue <span id="overdueSrc" class="src"></span><a href="#" id="newInv" class="src" style="color:#58a6ff">Work completed, add invoice</a></h2>
+        <form id="iform" class="iform hidden">
+          <label>client name <input name="client_name" required maxlength="60"></label>
+          <label>client email <input name="email" type="email" required></label>
+          <label>amount, USD <input name="amount" type="number" min="1" max="100000" step="0.01" value="1200" required></label>
+          <label>days overdue <input name="days_overdue" type="number" min="0" max="120" value="0" required></label>
+          <div class="full row"><button type="submit" class="btn btn-go" style="padding:8px 16px;font-size:15px">Add to the ledger</button><a href="#" id="invCancel" class="small">cancel</a><span id="imsg" class="small"></span></div>
+        </form>
         <div class="body">
           <table id="overdue">
-            <thead><tr><th>Client</th><th class="num">Amount</th><th class="num">Days overdue</th><th class="num">Last step</th></tr></thead>
+            <thead><tr><th>Client</th><th class="num">Amount</th><th class="num">Days overdue</th><th class="num">Ladder</th></tr></thead>
             <tbody><tr><td colspan="4" class="mute">loading the ledger…</td></tr></tbody>
           </table>
         </div>
@@ -49,23 +74,32 @@
       <section class="card">
         <h2>Today's rehearsal <span id="rehSrc" class="src"></span></h2>
         <div class="body">
-          <div class="mute small" style="margin-bottom:6px">WILL SEND <span id="sendN" class="mono"></span></div>
+          <div class="grp send">Will send <span id="sendN" class="mono"></span></div>
           <div id="sends"><div class="item mute">press Rehearse today</div></div>
-          <div class="mute small" style="margin:18px 0 6px">REFUSED <span id="refN" class="mono"></span></div>
-          <div id="refs"></div>
+          <div class="grp refused" style="margin-top:18px">Refused <span id="refN" class="mono"></span></div>
+          <div id="refs"><div class="item mute">none</div></div>
+          <details class="inner" id="waitDetails" style="margin-top:14px">
+            <summary class="mute">Waiting <span id="waitN" class="mono"></span></summary>
+            <div id="waits"></div>
+          </details>
         </div>
         <div class="approve">
           <button id="approve" class="btn btn-ok" disabled>Approve ✅</button>
-          <span id="approveNote" class="mute small">the tap: re-verifies the ledger, then executes with idempotency keys; the plan and the result also post to Slack #owed</span>
+          <span id="approveNote" class="mute small"></span>
         </div>
         <div class="mandate"><span id="mandateLine" class="grow">mandate…</span><a href="#" id="mandateEdit">Edit</a></div>
         <form id="mform" class="mform hidden">
           <label>signoff <input name="signoff"></label>
-          <label>step days (soft nudge / direct ask / propose a call) <span class="row" style="gap:8px"><input name="d1" type="number" min="1" max="90" style="width:80px"><input name="d2" type="number" min="1" max="90" style="width:80px"><input name="d3" type="number" min="1" max="90" style="width:80px"></span></label>
+          <label>step days (nudge / direct ask / propose a call) <span class="row" style="gap:8px"><input name="d1" type="number" min="1" max="90" style="width:80px"><input name="d2" type="number" min="1" max="90" style="width:80px"><input name="d3" type="number" min="1" max="90" style="width:80px"></span></label>
           <label class="full">tone, comma separated <input name="tone"></label>
           <label class="full">never, comma separated <input name="never"></label>
           <div class="full row"><button type="submit" class="btn btn-go" style="padding:8px 16px;font-size:15px">Save mandate</button><a href="#" id="mandateCancel" class="small">cancel</a><span id="mmsg" class="small"></span></div>
         </form>
+      </section>
+
+      <section class="card hidden" id="sentCard">
+        <h2>Sent today <span id="sentN" class="src"></span></h2>
+        <div class="body" id="sentToday"></div>
       </section>
     </div>
 
@@ -89,8 +123,10 @@
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const money = (n) => (n == null || n === '') ? '' : '$' + Number(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  const hhmm = (iso) => iso ? new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
   const APP = { stripe: 'Stripe', gmail: 'Gmail', calendar: 'Calendar', slack: 'Slack' };
-  let base = '', status = null, timer = null, busy = false, openedOnce = false;
+  const WAIT = new Set(['already_sent', 'waiting_tap']);
+  let base = '', status = null, busy = false, openedOnce = false, ladderDays = { 1: 3, 2: 10, 3: 21 };
 
   async function resolveBase() {
     try { const r = await fetch('/client.json', { cache: 'no-store' }); if (r.ok) { const d = await r.json(); if (d.url) base = d.url.replace(/\/$/, ''); } } catch (e) {}
@@ -101,24 +137,36 @@
     if (!r.ok) throw new Error(d.detail || (r.status + ' ' + r.statusText));
     return d;
   }
+  const isNet = (e) => /Failed to fetch|NetworkError|Load failed/.test(e.message);
   function offline(on, msg) { $('offline').classList.toggle('hidden', !on); if (on) $('offline').textContent = 'the agent runtime is offline' + (msg ? ` (${msg})` : ''); }
 
-  // ---------- overdue (live ledger) ----------
+  // ---------- ladder + overdue (live ledger) ----------
+  function renderLadder(l) {
+    ladderDays = Object.fromEntries((l || []).map(r => [r.step, r.day]));
+    $('ladder').innerHTML = (l || []).map((r, i) => `${i ? '<span class="arrow">→</span>' : ''}<span class="rung"><b>Step ${r.step}</b> · day ${r.day} · ${esc(r.action)}</span>`).join('');
+  }
+  function renderOverdue(d, src) {
+    $('overdueSrc').textContent = src;
+    $('overdue').querySelector('tbody').innerHTML = d.invoices.length ? d.invoices.map(r => {
+      const g = r.ladder || {};
+      const chip = g.last_step ? `step ${g.last_step} sent` : 'not chased yet';
+      return `<tr><td>${esc(r.client_name || r.client_email)} <span class="mute mono small">${esc(r.invoice_id)}</span></td>
+          <td class="num mono">${esc(money(r.amount_due))}${r.amount_due !== r.amount_total ? ` <span class="mute small">of ${esc(money(r.amount_total))}</span>` : ''}</td>
+          <td class="num mono">${esc(r.days_overdue)}</td>
+          <td class="num"><span class="pos"><span class="chip ${g.last_step ? 'chip-info' : 'chip-mute'}">${esc(chip)}</span><span class="nx ${g.due_now ? 'now' : ''}">${esc(g.next || '')}</span></span></td></tr>`; }).join('')
+      : `<tr><td colspan="4" class="mute">nothing overdue</td></tr>`;
+  }
   async function loadOverdue() {
     try {
       const d = await api('GET', '/freelancer/overdue');
-      $('overdueSrc').textContent = `live Stripe ledger · ${d.count} open · ${money(d.total_due)} due · as of ${d.today}`;
-      $('overdue').querySelector('tbody').innerHTML = d.invoices.length ? d.invoices.map(r => `
-        <tr><td>${esc(r.client_name || r.client_email)} <span class="mute mono small">${esc(r.invoice_id)}</span></td>
-            <td class="num mono">${esc(money(r.amount_due))}${r.amount_due !== r.amount_total ? ` <span class="mute small">of ${esc(money(r.amount_total))}</span>` : ''}</td>
-            <td class="num mono">${esc(r.days_overdue)}</td><td class="num mono">${esc(r.last_chased_step)}</td></tr>`).join('')
-        : `<tr><td colspan="4" class="mute">nothing overdue</td></tr>`;
+      renderLadder(d.ladder);
+      renderOverdue(d, `live Stripe ledger · ${d.count} open · ${money(d.total_due)} due · as of ${d.today}`);
       try { localStorage.setItem('owed.desk.overdue', JSON.stringify(d)); } catch (e) {}
       offline(false);
     } catch (e) {
-      offline(true, /Failed to fetch|NetworkError|Load failed/.test(e.message) ? '' : e.message);
+      offline(true, isNet(e) ? '' : e.message);
       let c = null; try { c = JSON.parse(localStorage.getItem('owed.desk.overdue') || 'null'); } catch (x) {}
-      if (c) { $('overdueSrc').textContent = `last cached ledger · as of ${c.today}`; }
+      if (c) { renderLadder(c.ladder); renderOverdue(c, `last cached ledger · as of ${c.today}`); }
     }
   }
 
@@ -127,24 +175,64 @@
     const p = it.payload || {};
     const extras = all.filter(x => x.idempotency_key === it.idempotency_key && x.kind !== 'send_email')
       .map(x => x.kind === 'create_payment_link' ? '+ payment link' : x.kind === 'create_event' ? '+ calendar event' : x.kind === 'post_chat' ? '+ slack post' : '').filter(Boolean).join(' ');
-    const kind = p.receipt ? 'WILL SEND receipt' : 'WILL SEND';
-    return `<div class="item"><span class="send">${kind}</span> ${esc(it.invoice_id)} step ${esc(it.step)} → ${esc(p.to)} <span class="why">“${esc(p.subject)}”</span> <span class="mono">${esc(money(p.amount))}</span> <span class="mute">${esc(extras)}</span>${it.requires_tap ? ' <span class="chip chip-warn">needs tap</span>' : ''}</div>`;
+    return `<div class="item"><span class="send">${p.receipt ? 'WILL SEND receipt' : 'WILL SEND'}</span> ${esc(it.invoice_id)} step ${esc(it.step)} → ${esc(p.to)} <span class="why">“${esc(p.subject)}”</span> <span class="mono">${esc(money(p.amount))}</span> <span class="mute">${esc(extras)}</span>${it.requires_tap ? ' <span class="chip chip-warn">needs tap</span>' : ''}</div>`;
+  }
+  function waitLine(r) {
+    // "step 2 already sent (day 12); step 3 at day 21" -> "INV · step 2 sent day 12 · next step 3 at day 21"
+    const m = /step (\d) already sent \(day (\d+)\);\s*(.*)$/.exec(r.detail || '');
+    const text = m ? `step ${m[1]} sent day ${m[2]} · ${/^step/.test(m[3]) ? 'next ' + m[3] : m[3]}` : (r.reason === 'waiting_tap' ? `step ${r.step} · ${r.detail}` : r.detail);
+    return `<div class="item mute">${esc(r.invoice_id)} · ${esc(text)}</div>`;
+  }
+  function statusLine(s) {
+    if (!s || s.phase === 'none') return 'no rehearsal yet today';
+    if (s.phase === 'rehearsing') { const secs = s.started_at ? Math.max(0, Math.round((Date.now() - new Date(s.started_at)) / 1000)) : 0; return `<b>Rehearsing…</b> ${secs}s`; }
+    if (s.phase === 'executing') return `<b>Executing…</b> approved ${hhmm(s.approved_at)}`;
+    if (s.phase === 'failed') return `<b>Failed</b> ${esc(s.error || '')}`;
+    const sends = (s.plan?.intents || []).filter(i => i.kind === 'send_email').length;
+    const refused = (s.plan?.refusals || []).filter(r => !WAIT.has(r.reason)).length;
+    if (s.phase === 'rehearsed') return `<b>Rehearsed ${hhmm(s.started_at)}</b> · would send ${sends}, refused ${refused}`;
+    const es = s.end_state || [];
+    const green = es.length && es.every(e => e.expected === e.actual);
+    const sent = (s.trace || []).filter(t => t.phase === 'execute' && /^SENT /.test(t.decision)).length;
+    return `<b>Executed ${hhmm(s.finished_at || s.approved_at)}</b> · sent ${sent}, end state ${green ? 'green' : es.length ? 'red' : 'not asserted'}`;
+  }
+  function renderSentToday(s) {
+    const lines = (s.trace || []).filter(t => t.phase === 'execute' && /^SENT /.test(t.decision));
+    if (s.phase !== 'executed' || !lines.length) { $('sentCard').classList.add('hidden'); return; }
+    const es = s.end_state || [], intents = s.plan?.intents || [];
+    const ok = (app, iid) => { const hit = es.find(e => e.app === app && (e.detail || '').includes(iid)); return hit ? (hit.expected === hit.actual ? 'ok' : 'bad') : null; };
+    $('sentCard').classList.remove('hidden');
+    $('sentN').textContent = `${lines.length} · ${hhmm(s.finished_at)}`;
+    $('sentToday').innerHTML = lines.map(t => {
+      const iid = t.invoice_id, key = intents.find(i => i.invoice_id === iid && i.kind === 'send_email');
+      const to = key ? key.payload.to : '', amt = key ? money(key.payload.amount) : '';
+      const hasLink = intents.some(i => i.invoice_id === iid && i.kind === 'create_payment_link');
+      const hasEvent = intents.some(i => i.invoice_id === iid && i.kind === 'create_event');
+      const slackOk = es.find(e => e.app === 'slack'); const sok = slackOk ? (slackOk.expected === slackOk.actual ? 'ok' : 'bad') : null;
+      const mark = (app, state, label) => state == null ? '' : `<span class="${state}">${state === 'ok' ? '✓' : '✕'} ${label}</span>`;
+      return `<div class="item"><span class="send">SENT</span> ${esc(iid)} step ${esc(key ? key.step : '')} → ${esc(to)} <span class="mono">${esc(amt)}</span>
+        <span class="apps">${mark('gmail', ok('gmail', iid), 'Gmail')}${hasLink ? mark('stripe', ok('stripe', iid), 'Stripe link') : ''}${hasEvent ? mark('calendar', ok('calendar', iid), 'Calendar') : ''}${mark('slack', sok, 'Slack')}</span></div>`;
+    }).join('');
   }
 
   function renderPlan(s) {
     const plan = s.plan || {}, intents = plan.intents || [], refusals = plan.refusals || [];
     const sends = intents.filter(i => i.kind === 'send_email');
     const others = intents.filter(i => !sends.some(x => x.idempotency_key === i.idempotency_key));
-    $('sendN').textContent = intents.length ? sends.length + others.length : '';
-    $('refN').textContent = intents.length || refusals.length ? refusals.length : '';
-    if (s.phase === 'rehearsing') { $('sends').innerHTML = `<div class="item mute"><span class="spin"></span> rehearsing the whole ledger against the shadow inbox: live actor drafts, live verifier checks…</div>`; $('refs').innerHTML = ''; }
-    else if (!intents.length && !refusals.length) { $('sends').innerHTML = `<div class="item mute">${s.phase === 'none' ? 'press Rehearse today' : 'nothing'}</div>`; $('refs').innerHTML = ''; }
+    const refused = refusals.filter(r => !WAIT.has(r.reason)), waiting = refusals.filter(r => WAIT.has(r.reason));
+    const has = intents.length || refusals.length;
+    $('statusline').innerHTML = statusLine(s);
+    $('sendN').textContent = has ? sends.length + others.length : '';
+    $('refN').textContent = has ? refused.length : '';
+    $('waitN').textContent = has ? waiting.length : '';
+    if (s.phase === 'rehearsing') { $('sends').innerHTML = `<div class="item mute"><span class="spin"></span> rehearsing the whole ledger against the shadow inbox: live actor drafts, live verifier checks…</div>`; $('refs').innerHTML = ''; $('waits').innerHTML = ''; }
+    else if (!has) { $('sends').innerHTML = `<div class="item mute">${s.phase === 'none' ? 'press Rehearse today' : 'nothing'}</div>`; $('refs').innerHTML = `<div class="item mute">none</div>`; $('waits').innerHTML = ''; }
     else {
-      $('sends').innerHTML = (sends.map(x => sendLine(x, intents)).join('') + others.map(o => `<div class="item"><span class="send">WILL DO</span> ${esc(o.kind)} ${esc(o.invoice_id)} step ${esc(o.step)}</div>`).join('')) || `<div class="item mute">nothing: no email, no link, no event</div>`;
-      $('refs').innerHTML = refusals.map(r => `<div class="item"><span class="refused">REFUSED</span> ${esc(r.invoice_id)} step ${esc(r.step)}: <span class="chip chip-bad">${esc(r.reason)}</span> <span class="why">${esc(r.detail)}</span></div>`).join('') || `<div class="item mute">none</div>`;
+      $('sends').innerHTML = (sends.map(x => sendLine(x, intents)).join('') + others.map(o => `<div class="item"><span class="send">WILL DO</span> ${esc(o.kind)} ${esc(o.invoice_id)} step ${esc(o.step)}</div>`).join('')) || `<div class="item mute">nothing to send today</div>`;
+      $('refs').innerHTML = refused.map(r => `<div class="item"><span class="refused">REFUSED</span> ${esc(r.invoice_id)} step ${esc(r.step)}: <span class="chip chip-bad">${esc(r.reason)}</span> <span class="why">${esc(r.detail)}</span></div>`).join('') || `<div class="item mute">none</div>`;
+      $('waits').innerHTML = waiting.map(waitLine).join('') || `<div class="item mute">none</div>`;
     }
-    const when = (s.started_at || '').replace('T', ' ').slice(0, 16);
-    $('rehSrc').textContent = s.run_id ? `${s.run_id} · ${s.phase}${when ? ' · ' + when : ''}${s.phase === 'executed' ? ' · ' + (s.summary || '') : ''}` : '';
+    $('rehSrc').textContent = s.run_id ? `${s.run_id} · ${s.phase}` : '';
 
     const es = Array.isArray(s.end_state) ? s.end_state : [];
     $('endN').textContent = es.length ? `${es.filter(e => e.expected === e.actual).length}/${es.length}` : '';
@@ -161,12 +249,14 @@
       return `<div><span class="mute">${esc((t.ts || '').slice(11, 19))}</span> <span class="mute">${esc(t.phase)}</span> <span class="${cls}">${esc(t.decision)}</span></div>`; }).join('');
     if ((s.phase === 'executed' || s.phase === 'failed') && !openedOnce) { $('endDetails').open = true; $('traceDetails').open = true; openedOnce = true; }
     if (s.phase === 'rehearsing' || s.phase === 'executing') openedOnce = false;
+    renderSentToday(s);
 
-    const canApprove = s.phase === 'rehearsed' && intents.length > 0 && !busy;
-    $('approve').disabled = !canApprove;
+    const nothing = s.phase === 'rehearsed' && !(sends.length + others.length);
+    $('approve').disabled = !(s.phase === 'rehearsed' && (sends.length + others.length) > 0) || busy;
+    $('approve').textContent = nothing ? 'Nothing to send today' : 'Approve ✅';
     $('approveNote').textContent = s.phase === 'failed' && s.error ? s.error
       : s.phase === 'executing' ? 'approved: re-verifying the ledger, executing, asserting…'
-      : s.phase === 'executed' ? `done: ${s.summary}` : s.phase === 'rehearsed' && !intents.length ? 'nothing to approve: every invoice was refused or waiting'
+      : s.phase === 'executed' ? `done: ${s.summary}` : nothing ? 'every invoice is refused or waiting for its next step'
       : 'the tap: re-verifies the ledger, then executes with idempotency keys; the plan and the result also post to Slack #owed';
     $('approveNote').style.color = s.phase === 'failed' ? '#f85149' : '';
     $('rehearse').disabled = s.phase === 'rehearsing' || s.phase === 'executing' || busy;
@@ -182,7 +272,7 @@
       if (status.phase === 'executed' && !poll.reloaded) { poll.reloaded = true; loadOverdue(); }
       if (status.phase === 'rehearsing' || status.phase === 'executing') poll.reloaded = false;
     } catch (e) {
-      offline(true, /Failed to fetch|NetworkError|Load failed/.test(e.message) ? '' : e.message);
+      offline(true, isNet(e) ? '' : e.message);
       let c = null; try { c = JSON.parse(localStorage.getItem('owed.desk.status') || 'null'); } catch (x) {}
       if (c) renderPlan(c);
     }
@@ -198,6 +288,18 @@
     busy = true; $('approve').disabled = true;
     try { await api('POST', '/freelancer/approve', { run_id: status.run_id }); } catch (e) { $('approveNote').textContent = e.message; $('approveNote').style.color = '#f85149'; }
     busy = false; await poll();
+  });
+
+  // ---------- new invoice ----------
+  const inv = $('iform');
+  $('newInv').addEventListener('click', (e) => { e.preventDefault(); inv.classList.toggle('hidden'); $('imsg').textContent = ''; });
+  $('invCancel').addEventListener('click', (e) => { e.preventDefault(); inv.classList.add('hidden'); });
+  inv.addEventListener('submit', async (e) => {
+    e.preventDefault(); $('imsg').textContent = 'adding…'; $('imsg').style.color = '';
+    try {
+      const d = await api('POST', '/freelancer/invoice', { client_name: inv.client_name.value, email: inv.email.value, amount: +inv.amount.value, days_overdue: +inv.days_overdue.value });
+      $('imsg').textContent = `${d.invoice.invoice_id} added, ${money(d.invoice.amount_due)}`; inv.classList.add('hidden'); loadOverdue();
+    } catch (err) { $('imsg').textContent = err.message; $('imsg').style.color = '#f85149'; }
   });
 
   // ---------- mandate ----------
@@ -217,14 +319,14 @@
     const split = (v) => v.split(',').map(s => s.trim()).filter(Boolean);
     try {
       const d = await api('POST', '/freelancer/mandate', { signoff: f.signoff.value, step_1_day: +f.d1.value, step_2_day: +f.d2.value, step_3_day: +f.d3.value, tone: split(f.tone.value), never: split(f.never.value) });
-      $('mandateLine').textContent = d.summary; f.classList.add('hidden'); $('mmsg').textContent = '';
+      $('mandateLine').textContent = d.summary; f.classList.add('hidden'); $('mmsg').textContent = ''; loadOverdue();
     } catch (err) { $('mmsg').textContent = err.message; $('mmsg').style.color = '#f85149'; }
   });
 
   (async () => {
     await resolveBase();
     loadOverdue();
-    poll(); timer = setInterval(poll, 3000);
+    poll(); setInterval(poll, 3000);
   })();
 })();
 </script>

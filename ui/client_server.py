@@ -350,18 +350,78 @@ class RunBody(BaseModel):
     run_id: str
 
 
+def _ladder(mandate: dict) -> list[dict]:
+    from owed.agent.planner import step_days
+    days = step_days(mandate)
+    actions = {1: "nudge", 2: "direct ask + payment link", 3: "propose a call, needs your tap"}
+    return [{"step": s, "day": days[s], "action": actions[s]} for s in (1, 2, 3)]
+
+
+def _rung(last: int, days_overdue: int, mandate: dict) -> dict:
+    """Where an invoice sits on the ladder and what comes next, from the same thresholds the planner uses."""
+    from owed.agent.planner import step_days, target_step
+    days = step_days(mandate)
+    target = target_step(days_overdue, mandate)  # the planner sends the highest step whose day is reached
+    if target > last:
+        return {"last_step": last, "next_step": target, "next_day": days[target], "due_now": True,
+                "next": f"next: step {target} now (day {days_overdue})"}
+    nxt = next((s for s in (1, 2, 3) if s > last), None)
+    if nxt is None:
+        return {"last_step": last, "next_step": None, "next_day": None, "due_now": False, "next": "no further steps"}
+    return {"last_step": last, "next_step": nxt, "next_day": days[nxt], "due_now": False,
+            "next": f"next: step {nxt} at day {days[nxt]}"}
+
+
 @app.get("/freelancer/overdue")
 def overdue():
     """Live snapshot of the Stripe ledger. Reads only."""
+    from owed.run import load_mandate
+    mandate = load_mandate()
     today = today_fn()
     rows = []
     for i in ledger().overdue(today):
+        d = i.days_overdue(today)
         rows.append({"invoice_id": i.invoice_id, "client_name": i.client_name, "client_email": i.client_email,
                      "amount_due": i.amount_due, "amount_total": i.amount_total, "due_date": i.due_date.isoformat(),
-                     "days_overdue": i.days_overdue(today), "last_chased_step": i.last_chased_step})
+                     "days_overdue": d, "last_chased_step": i.last_chased_step,
+                     "ladder": _rung(i.last_chased_step, d, mandate)})
     rows.sort(key=lambda r: (-r["days_overdue"], r["invoice_id"]))
     return JSONResponse({"today": today.isoformat(), "count": len(rows), "total_due": round(sum(r["amount_due"] for r in rows), 2),
-                         "invoices": rows}, headers={"Cache-Control": "no-store"})
+                         "ladder": _ladder(mandate), "invoices": rows}, headers={"Cache-Control": "no-store"})
+
+
+class InvoiceBody(BaseModel):
+    client_name: str
+    email: str
+    amount: float
+    days_overdue: int = 0
+
+
+@app.post("/freelancer/invoice")
+def new_invoice(body: InvoiceBody):
+    """Work completed, add invoice: seeds one open invoice in Stripe test mode for that client.
+    Test-data setup through owed.seed, not an agent write; the agent only ever reads the ledger."""
+    from owed.run import EMAIL_RE, client_key
+    from owed.seed import seed_invoice
+    email = body.email.strip().lower()
+    name = body.client_name.strip()
+    if not EMAIL_RE.match(email):
+        raise HTTPException(400, "email: not an email address")
+    if not name or len(name) > 60:
+        raise HTTPException(400, "client_name: 1 to 60 characters")
+    if not 1 <= body.amount <= 100000:
+        raise HTTPException(400, "amount: 1 to 100000")
+    if not 0 <= body.days_overdue <= 120:
+        raise HTTPException(400, "days_overdue: 0 to 120")
+    if not RUN_LOCK.acquire(timeout=1):
+        raise HTTPException(409, "a run is in progress; try again in a moment")
+    try:
+        invoice_id = f"INV-{client_key(email)}-{datetime.now().strftime('%H%M%S')}"
+        seeded = seed_invoice(email, client_name=name, invoice_id=invoice_id, amount=float(body.amount),
+                              days_overdue=body.days_overdue)
+    finally:
+        RUN_LOCK.release()
+    return {"invoice": seeded}
 
 
 @app.get("/freelancer/mandate")
