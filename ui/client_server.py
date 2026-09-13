@@ -192,6 +192,13 @@ def _receipt_in_background(email: str, d: Path, run_id: str, invoice_id: str, we
             _set_meta(d, run_id, receipt_error=f"{type(e).__name__}: {str(e)[:300]}")
 
 
+def _sender() -> Optional[str]:
+    import os
+    from owed.config import load_env
+    load_env()
+    return os.environ.get("FREELANCER_EMAIL") or None
+
+
 # ---------- endpoints ----------
 
 class StartBody(BaseModel):
@@ -275,7 +282,7 @@ def status(email: str):
     d = _dir(email)
     meta = _latest(d)
     if not meta:
-        return JSONResponse({"email": email, "phase": "none", "run_id": None, "runs": []},
+        return JSONResponse({"email": email, "phase": "none", "run_id": None, "runs": [], "sender": _sender()},
                             headers={"Cache-Control": "no-store"})
     run_id = meta["run_id"]
     plan = _read(d / "plans" / f"{run_id}.json") or {}
@@ -294,7 +301,378 @@ def status(email: str):
         "receipt_sent": bool(meta.get("receipt_sent")), "receipt_error": meta.get("receipt_error"),
         "runs": _run_history(d, invoice.get("invoice_id")),
         "plan": plan, "end_state": plan.get("end_state"), "trace": _trace_lines(d, run_id),
-        "posts": chat.posts()[-6:], "closed": closed,
+        "posts": chat.posts()[-6:], "closed": closed, "sender": _sender(),
+    }, headers={"Cache-Control": "no-store"})
+
+
+# ---------- the freelancer's desk: the whole ledger, web tap + Slack #owed, mandate edits ----------
+
+DESK = STATE_ROOT / "desk"
+MANDATE_PATH = ROOT / "owed" / "mandate" / "mandate.yaml"
+MANDATE_HEADER = ("# The mandate. Set once by the freelancer, edited from the desk. Read by planner (day thresholds),\n"
+                  "# drafter (voice, tone, never-list) and verifier (never-list, tone).\n")
+_calendar = None
+_slack = None
+
+
+def calendar():
+    global _calendar
+    if _calendar is None:
+        from owed.adapters.calendar_live import GoogleCalendar
+        _calendar = GoogleCalendar()
+    return _calendar
+
+
+def slack():
+    global _slack
+    if _slack is None:
+        from owed.adapters.chat_live import SlackChat
+        _slack = SlackChat()
+    return _slack
+
+
+def _desk_chat(run_id: str):
+    """The web Approve is the tap; every post also lands in Slack #owed."""
+    from owed.adapters.chat_fanout import FanoutChat
+    return FanoutChat(WebTapChat(DESK / "posts.jsonl", DESK / "approve.json", run_id), slack())
+
+
+def _mandate_summary(m: dict) -> str:
+    days = "/".join(str((m.get(f"step_{s}") or {}).get("day", "?")) for s in (1, 2, 3))
+    tap = "step 3 needs the tap" if (m.get("step_3") or {}).get("requires_tap") else "no step needs the tap"
+    return (f"{m.get('steps', 3)} steps at day {days} · tone: {', '.join(m.get('tone', []))} · "
+            f"never: {', '.join(m.get('never', []))} · {tap} · signs {m.get('signoff', '')}")
+
+
+class MandateBody(BaseModel):
+    signoff: Optional[str] = None
+    tone: Optional[list[str]] = None
+    never: Optional[list[str]] = None
+    step_1_day: Optional[int] = None
+    step_2_day: Optional[int] = None
+    step_3_day: Optional[int] = None
+
+
+class RunBody(BaseModel):
+    run_id: str
+
+
+def _ladder(mandate: dict) -> list[dict]:
+    from owed.agent.planner import step_days
+    days = step_days(mandate)
+    actions = {1: "nudge", 2: "direct ask + payment link", 3: "propose a call, needs your tap"}
+    return [{"step": s, "day": days[s], "action": actions[s]} for s in (1, 2, 3)]
+
+
+def _rung(last: int, days_overdue: int, mandate: dict) -> dict:
+    """Where an invoice sits on the ladder and what comes next, from the same thresholds the planner uses."""
+    from owed.agent.planner import step_days, target_step
+    days = step_days(mandate)
+    target = target_step(days_overdue, mandate)  # the planner sends the highest step whose day is reached
+    if target > last:
+        return {"last_step": last, "next_step": target, "next_day": days[target], "due_now": True,
+                "next": f"next: step {target} now (day {days_overdue})"}
+    nxt = next((s for s in (1, 2, 3) if s > last), None)
+    if nxt is None:
+        return {"last_step": last, "next_step": None, "next_day": None, "due_now": False, "next": "no further steps"}
+    return {"last_step": last, "next_step": nxt, "next_day": days[nxt], "due_now": False,
+            "next": f"next: step {nxt} at day {days[nxt]}"}
+
+
+# ---------- your own desk: a workspace under state/desks/<slug> with its own clients, mandate, webhook ----------
+
+DESKS = STATE_ROOT / "desks"
+SLUG_RE = re.compile(r"^[a-z0-9][a-z0-9-]{2,48}$")
+DESK_SEEDS = [  # tag, client name, amount, days overdue, partial credit
+    ("alder", "Alder Studio", 900.0, 4, 0.0),
+    ("birch", "Birch & Co", 1250.0, 12, 0.0),
+    ("cedar", "Cedar Labs", 1800.0, 13, 600.0),
+    ("dune", "Dune Press", 4200.0, 22, 0.0),
+]
+
+
+class Ctx:
+    """Everything an endpoint needs to act on one desk: Priya's (desk=None) or a workspace."""
+    def __init__(self, slug: Optional[str]):
+        import yaml
+        from owed.run import load_mandate
+        self.slug = slug
+        if slug is None:
+            self.dir, self.ws, self.clients, self.mandate_path = DESK, None, None, MANDATE_PATH
+            self.mandate = load_mandate()
+            return
+        if not SLUG_RE.match(slug):
+            raise HTTPException(400, "desk: bad slug")
+        self.dir = DESKS / slug
+        ws = _read(self.dir / "workspace.json")
+        if not ws:
+            raise HTTPException(404, f"no desk {slug}")
+        self.ws = ws
+        self.clients = set(ws.get("clients", []))
+        self.mandate_path = self.dir / "mandate.yaml"
+        m = yaml.safe_load(self.mandate_path.read_text())
+        if not isinstance(m, dict):
+            raise HTTPException(500, "workspace mandate is not a mapping")
+        self.mandate = m
+
+    def chat(self, run_id: str):
+        if self.ws is None:
+            return _desk_chat(run_id)
+        return WebTapChat(self.dir / "posts.jsonl", self.dir / "approve.json", run_id, self.ws.get("webhook") or None)
+
+    def save_ws(self, **fields) -> dict:
+        self.ws.update(fields)
+        (self.dir / "workspace.json").write_text(json.dumps(self.ws, indent=2))
+        return self.ws
+
+
+class DeskCreate(BaseModel):
+    name: str
+    email: str
+
+
+class DeskWebhook(BaseModel):
+    webhook: Optional[str] = None
+
+
+def _slugify(name: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:24] or "desk"
+
+
+@app.post("/desk/create")
+def desk_create(body: DeskCreate):
+    """A workspace: four seeded clients at <email>+alder/+birch/+cedar/+dune, a copy of the mandate signed
+    with the name. Emails send from Priya's test account to those addresses."""
+    import shutil
+    import yaml
+    from owed.run import EMAIL_RE, client_key
+    from owed.seed import seed_invoice
+    name, email = body.name.strip(), body.email.strip().lower()
+    if not name or len(name) > 40:
+        raise HTTPException(400, "name: 1 to 40 characters")
+    if not EMAIL_RE.match(email):
+        raise HTTPException(400, "email: not an email address")
+    slug = f"{_slugify(name)}-{client_key(email).lower()}"
+    d = DESKS / slug
+    if (d / "workspace.json").exists():
+        return {"slug": slug, "created": False}
+    if not RUN_LOCK.acquire(timeout=1):
+        raise HTTPException(409, "a run is in progress; try again in a moment")
+    try:
+        local, domain = email.split("@", 1)
+        clients, seeded = [], []
+        for tag, cname, amount, days, partial in DESK_SEEDS:
+            addr = f"{local}+{tag}@{domain}"
+            clients.append(addr)
+            seeded.append(seed_invoice(addr, client_name=cname, amount=amount, days_overdue=days, partial=partial))
+        d.mkdir(parents=True, exist_ok=True)
+        m = yaml.safe_load(MANDATE_PATH.read_text())
+        m["signoff"] = name
+        (d / "mandate.yaml").write_text(MANDATE_HEADER + yaml.safe_dump(m, sort_keys=False, allow_unicode=True))
+        (d / "workspace.json").write_text(json.dumps({
+            "slug": slug, "name": name, "email": email, "clients": clients, "webhook": None,
+            "created_at": datetime.now(timezone.utc).isoformat()}, indent=2))
+    finally:
+        RUN_LOCK.release()
+    return {"slug": slug, "created": True, "clients": clients, "invoices": [x["invoice_id"] for x in seeded]}
+
+
+@app.get("/desk/info")
+def desk_info(desk: str):
+    c = Ctx(desk)
+    return {"slug": c.slug, "name": c.ws["name"], "email": c.ws["email"], "clients": c.ws["clients"],
+            "webhook": bool(c.ws.get("webhook")), "sender": _sender()}
+
+
+@app.post("/desk/webhook")
+def desk_webhook(body: DeskWebhook, desk: str):
+    c = Ctx(desk)
+    hook = (body.webhook or "").strip() or None
+    if hook and not hook.startswith(WEBHOOK_PREFIX):
+        raise HTTPException(400, f"webhook must start with {WEBHOOK_PREFIX}")
+    c.save_ws(webhook=hook)
+    return {"webhook": bool(hook)}
+
+
+@app.get("/freelancer/overdue")
+def overdue(desk: Optional[str] = None):
+    """Live snapshot of the Stripe ledger, scoped to the desk's clients. Reads only."""
+    c = Ctx(desk)
+    mandate = c.mandate
+    today = today_fn()
+    rows = []
+    for i in ledger().overdue(today):
+        if c.clients is not None and i.client_email.lower() not in c.clients:
+            continue
+        d = i.days_overdue(today)
+        rows.append({"invoice_id": i.invoice_id, "client_name": i.client_name, "client_email": i.client_email,
+                     "amount_due": i.amount_due, "amount_total": i.amount_total, "due_date": i.due_date.isoformat(),
+                     "days_overdue": d, "last_chased_step": i.last_chased_step,
+                     "ladder": _rung(i.last_chased_step, d, mandate)})
+    rows.sort(key=lambda r: (-r["days_overdue"], r["invoice_id"]))
+    return JSONResponse({"today": today.isoformat(), "count": len(rows), "total_due": round(sum(r["amount_due"] for r in rows), 2),
+                         "ladder": _ladder(mandate), "invoices": rows}, headers={"Cache-Control": "no-store"})
+
+
+class InvoiceBody(BaseModel):
+    client_name: str
+    email: str
+    amount: float
+    days_overdue: int = 0
+
+
+@app.post("/freelancer/invoice")
+def new_invoice(body: InvoiceBody, desk: Optional[str] = None):
+    """Work completed, add invoice: seeds one open invoice in Stripe test mode for that client.
+    Test-data setup through owed.seed, not an agent write; the agent only ever reads the ledger."""
+    from owed.run import EMAIL_RE, client_key
+    from owed.seed import seed_invoice
+    c = Ctx(desk)
+    email = body.email.strip().lower()
+    name = body.client_name.strip()
+    if not EMAIL_RE.match(email):
+        raise HTTPException(400, "email: not an email address")
+    if not name or len(name) > 60:
+        raise HTTPException(400, "client_name: 1 to 60 characters")
+    if not 1 <= body.amount <= 100000:
+        raise HTTPException(400, "amount: 1 to 100000")
+    if not 0 <= body.days_overdue <= 120:
+        raise HTTPException(400, "days_overdue: 0 to 120")
+    if not RUN_LOCK.acquire(timeout=1):
+        raise HTTPException(409, "a run is in progress; try again in a moment")
+    try:
+        invoice_id = f"INV-{client_key(email)}-{datetime.now().strftime('%H%M%S')}"
+        seeded = seed_invoice(email, client_name=name, invoice_id=invoice_id, amount=float(body.amount),
+                              days_overdue=body.days_overdue)
+        if c.ws is not None and email not in c.clients:
+            c.save_ws(clients=sorted(c.clients | {email}))
+    finally:
+        RUN_LOCK.release()
+    return {"invoice": seeded}
+
+
+@app.get("/freelancer/mandate")
+def get_mandate(desk: Optional[str] = None):
+    m = Ctx(desk).mandate
+    return {"mandate": m, "summary": _mandate_summary(m)}
+
+
+@app.post("/freelancer/mandate")
+def set_mandate(body: MandateBody, desk: Optional[str] = None):
+    """Edits the desk's mandate.yaml in place. Validated at the boundary; the file is rewritten whole."""
+    import yaml
+    c = Ctx(desk)
+    m = yaml.safe_load(c.mandate_path.read_text())
+    if not isinstance(m, dict):
+        raise HTTPException(500, "mandate.yaml is not a mapping")
+
+    def clean_list(name: str, items: list[str]) -> list[str]:
+        out = [s.strip() for s in items if isinstance(s, str) and s.strip()]
+        if not out or len(out) > 8 or any(len(s) > 80 for s in out):
+            raise HTTPException(400, f"{name}: 1 to 8 entries of at most 80 characters")
+        return out
+
+    if body.signoff is not None:
+        s = body.signoff.strip()
+        if not s or len(s) > 40:
+            raise HTTPException(400, "signoff: 1 to 40 characters")
+        m["signoff"] = s
+    if body.tone is not None:
+        m["tone"] = clean_list("tone", body.tone)
+    if body.never is not None:
+        m["never"] = clean_list("never", body.never)
+    days = {s: (m.get(f"step_{s}") or {}).get("day") for s in (1, 2, 3)}
+    for s in (1, 2, 3):
+        v = getattr(body, f"step_{s}_day")
+        if v is not None:
+            if not 1 <= v <= 90:
+                raise HTTPException(400, f"step_{s}_day: 1 to 90")
+            days[s] = v
+    if not (days[1] < days[2] < days[3]):
+        raise HTTPException(400, f"step days must increase: {days[1]} < {days[2]} < {days[3]}")
+    for s in (1, 2, 3):
+        m[f"step_{s}"] = dict(m.get(f"step_{s}") or {}, day=days[s])
+    m["step_3"]["requires_tap"] = True  # SPEC: nothing past step 2 sends without the tap
+    c.mandate_path.write_text(MANDATE_HEADER + yaml.safe_dump(m, sort_keys=False, allow_unicode=True))
+    return {"mandate": m, "summary": _mandate_summary(m)}
+
+
+def _rehearse_desk_in_background(c: Ctx, run_id: str) -> None:
+    from owed.run import ALL_CLIENTS
+    try:
+        plan, ts = rehearse_for(ALL_CLIENTS, c.dir, ledger=ledger(), inbox=inbox(), calendar=calendar(),
+                                today=today_fn(), chat=c.chat(run_id), run_id=run_id, mandate=c.mandate,
+                                clients=c.clients)
+        _set_meta(c.dir, run_id, phase="rehearsed", plan_ts=ts, summary=plan_summary(plan))
+    except Exception as e:  # noqa: BLE001 - surfaced in the panel
+        traceback.print_exc()
+        _set_meta(c.dir, run_id, phase="failed", error=f"{type(e).__name__}: {str(e)[:300]}")
+    finally:
+        RUN_LOCK.release()
+
+
+@app.post("/freelancer/rehearse")
+def desk_rehearse(desk: Optional[str] = None):
+    """Rehearse the desk's ledger with the live actor and verifier. Runs in the background (a full ledger
+    can take minutes); poll /freelancer/status until phase is rehearsed."""
+    c = Ctx(desk)
+    if not RUN_LOCK.acquire(timeout=1):
+        raise HTTPException(409, "a run is in progress; try again in a moment")
+    run_id = f"desk-{datetime.now().strftime('%H%M%S')}"
+    c.dir.mkdir(parents=True, exist_ok=True)
+    _set_meta(c.dir, run_id, phase="rehearsing", started_at=datetime.now(timezone.utc).isoformat())
+    (c.dir / "latest.json").write_text(json.dumps({"run_id": run_id}))
+    threading.Thread(target=_rehearse_desk_in_background, args=(c, run_id), daemon=True).start()
+    return {"run_id": run_id, "phase": "rehearsing"}
+
+
+def _execute_desk_in_background(c: Ctx, run_id: str, meta: dict) -> None:
+    from owed.run import ALL_CLIENTS
+    with RUN_LOCK:
+        try:
+            plan = execute_for(ALL_CLIENTS, run_id, c.dir, ledger=ledger(), inbox=inbox(), calendar=calendar(),
+                               chat=c.chat(run_id), plan_ts=meta.get("plan_ts", ""), clients=c.clients)
+            _set_meta(c.dir, run_id, phase="executed", summary=plan_summary(plan),
+                      finished_at=datetime.now(timezone.utc).isoformat())
+        except Exception as e:  # noqa: BLE001
+            traceback.print_exc()
+            _set_meta(c.dir, run_id, phase="failed", error=f"{type(e).__name__}: {str(e)[:300]}")
+
+
+@app.post("/freelancer/approve")
+def desk_approve(body: RunBody, desk: Optional[str] = None):
+    c = Ctx(desk)
+    run_id = body.run_id.strip()
+    if not re.match(r"^desk-\d{6}$", run_id):
+        raise HTTPException(400, "run_id must be the value returned by /freelancer/rehearse")
+    meta = _read(_meta_path(c.dir, run_id))
+    if not meta:
+        raise HTTPException(404, f"no desk run {run_id}")
+    if meta.get("phase") != "rehearsed":
+        raise HTTPException(409, f"run {run_id} is {meta.get('phase')}, not rehearsed")
+    (c.dir / "approve.json").write_text(json.dumps({"run_id": run_id, "via": "web",
+                                                   "approved_at": datetime.now(timezone.utc).isoformat()}, indent=2))
+    meta = _set_meta(c.dir, run_id, phase="executing", approved_at=datetime.now(timezone.utc).isoformat())
+    threading.Thread(target=_execute_desk_in_background, args=(c, run_id, meta), daemon=True).start()
+    return {"approved": True, "run_id": run_id, "phase": "executing"}
+
+
+@app.get("/freelancer/status")
+def desk_status(desk: Optional[str] = None):
+    c = Ctx(desk)
+    m = c.mandate
+    meta = _latest(c.dir) if c.dir.exists() else None
+    if not meta:
+        return JSONResponse({"phase": "none", "run_id": None, "mandate_summary": _mandate_summary(m)},
+                            headers={"Cache-Control": "no-store"})
+    run_id = meta["run_id"]
+    plan = _read(c.dir / "plans" / f"{run_id}.json") or {}
+    posts = WebTapChat(c.dir / "posts.jsonl", c.dir / "approve.json", run_id).posts()
+    return JSONResponse({
+        "run_id": run_id, "phase": meta.get("phase"), "error": meta.get("error"), "summary": meta.get("summary"),
+        "started_at": meta.get("started_at"), "approved_at": meta.get("approved_at"), "finished_at": meta.get("finished_at"),
+        "plan": plan, "end_state": plan.get("end_state"), "trace": _trace_lines(c.dir, run_id), "posts": posts[-4:],
+        "mandate_summary": _mandate_summary(m),
     }, headers={"Cache-Control": "no-store"})
 
 

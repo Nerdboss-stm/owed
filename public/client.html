@@ -31,6 +31,7 @@
 
   <p class="lead" id="lead">Be the client who owes $3,400: the agent will chase you for real, and you decide whether it may.</p>
   <div id="offline" class="offline hidden">the agent runtime is offline</div>
+  <div id="sender" class="note" style="margin:-16px 0 24px">Emails arrive from Priya's test Gmail account, signed by the freelancer. Check spam if nothing lands within a minute.</div>
 
   <div class="start" id="startRow">
     <input id="email" class="field" type="email" placeholder="your email" autocomplete="email">
@@ -67,6 +68,27 @@
   const money = (n) => (n == null || n === '') ? '' : '$' + Number(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
   const STATE = { none: 'no reply', other: 'a reply, no instruction in it', says_paid: 'says paid', disputes: 'disputes the invoice',
                   asks_docs: 'asks for documents', promises_date: 'promises a date', injection: 'an instruction (injection)' };
+  // What the agent did with your reply, in plain words. Red only when a reply was actually detected.
+  const REPLY = {
+    promises_date: 'You promised a date. The agent will wait, no chase.',
+    disputes: 'You disputed it. Escalated to the freelancer, no email to you.',
+    injection: 'Your message contained an instruction. Classified, not followed.',
+    says_paid: 'You said you paid. The ledger still shows the balance open, so no chase; the freelancer is flagged.',
+    asks_docs: 'You asked for documents. The freelancer answers; no chase.',
+  };
+  function outcomeFor(latest, rerun, replyDetected) {
+    if (!rerun) return null;
+    const refusals = latest.refusals || [];
+    if (latest.sent) return { done: true, label: 'Sent', sub: 'a second email went out' };
+    if (latest.aborted) return { done: true, bad: true, label: 'Aborted', sub: 'money arrived between rehearsal and send' };
+    if (!refusals.length) return null;
+    if (!replyDetected && refusals.every(r => r.reason === 'already_sent'))
+      return { done: false, label: 'Waiting for your reply. Nothing more to send today.', sub: 'the last step already went out; the next one is not due yet' };
+    if (replyDetected)
+      return { done: true, bad: true, label: REPLY[latest.thread_state] || 'Refused', sub: refusals.map(r => r.detail).join(' · ') };
+    return { done: true, bad: true, label: 'Refused', sub: refusals.map(r => `${r.reason}: ${r.detail}`).join(' · ') };
+  }
+  window.owedOutcome = outcomeFor;
   let base = '', busy = false, timer = null, status = null;
 
   const email = () => $('email').value.trim().toLowerCase();
@@ -95,15 +117,15 @@
     const rerun = reruns.length > 0;
     const latest = rerun ? reruns[reruns.length - 1] : {};
     const closed = s.closed && s.closed.line;
-    const outcome = rerun ? (latest.refusals && latest.refusals.length ? { bad: true, label: 'Refused', sub: latest.refusals.map(r => `${r.reason}: ${r.detail}`).join(' · ') }
-                           : latest.sent ? { label: 'Sent', sub: 'a second email went out' } : latest.aborted ? { bad: true, label: 'Aborted', sub: 'money arrived between rehearsal and send' } : null) : null;
+    const replyDetected = rerun && !!latest.thread_state && !['none', 'other'].includes(latest.thread_state);
+    const outcome = outcomeFor(latest, rerun, replyDetected);
     return [
       { label: 'Invoice created', done: !!inv.invoice_id, sub: inv.invoice_id ? `${inv.invoice_id} · ${money(inv.amount_due)} · ${inv.days_overdue} days overdue · Stripe test mode` : '' },
       { label: 'Rehearsed', done: !!(first && first.summary), active: s.phase === 'rehearsing' && !sent, sub: first && first.summary ? `${first.summary} · shadow inbox, second model verified the draft` : 'planner → drafter → verifier against a shadow copy' },
       { label: 'Approved', done: approved, sub: approved ? 'you tapped Approve; the ledger was re-verified before anything sent' : 'press Approve: nothing sends without it' },
       { label: 'Email sent to you', done: sent, active: s.phase === 'executing', sub: sent ? 'check your inbox: one email, one payment link, one idempotency key' : '' },
-      { label: 'Your reply detected: ' + (rerun ? (STATE[latest.thread_state] || latest.thread_state || 'none') : '…'), done: rerun, active: sent && s.phase === 'rehearsing', sub: rerun ? 'the reply is classified as data, never followed' : 'reply to the email, then press Rerun' },
-      { label: outcome ? outcome.label : 'Refused / Sent', done: !!outcome, bad: outcome && outcome.bad, sub: outcome ? outcome.sub : 'what the agent does with your reply' },
+      { label: 'Your reply detected: ' + (replyDetected ? STATE[latest.thread_state] || latest.thread_state : '…'), done: replyDetected, active: sent && s.phase === 'rehearsing', sub: replyDetected ? 'the reply is classified as data, never followed' : 'reply to the email, then press Rerun' },
+      { label: outcome ? outcome.label : 'Refused / Sent', done: !!(outcome && outcome.done), bad: !!(outcome && outcome.bad), sub: outcome ? outcome.sub : 'what the agent does with your reply' },
       { label: 'Paid', done: !!closed, sub: closed ? s.closed.line : 'pay the link in the email' },
       { label: 'Closed, receipt sent', done: !!s.receipt_sent, active: !!closed && !s.receipt_sent && !s.receipt_error, bad: !!s.receipt_error, sub: s.receipt_sent ? 'a receipt went to you in the same thread' : s.receipt_error || '' },
     ];
@@ -155,6 +177,7 @@
       const s = await api('GET', `/client/status?email=${encodeURIComponent(email())}`);
       $('offline').classList.add('hidden');
       try { localStorage.setItem(cacheKey(), JSON.stringify(s)); } catch (e) {}
+      if (s.sender) $('sender').textContent = `Emails arrive from ${s.sender}, Priya's test Gmail account, signed by the freelancer. Check spam if nothing lands within a minute.`;
       render(s, false);
     } catch (e) {
       $('offline').textContent = 'the agent runtime is offline' + (e.message && !/Failed to fetch|NetworkError|Load failed/.test(e.message) ? ` (${e.message})` : '');

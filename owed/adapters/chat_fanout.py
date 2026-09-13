@@ -1,9 +1,13 @@
-"""FanoutChat: one Chat over several. post() posts to every chat; wait_for_tap() returns as soon as any
-one of them is tapped; count_posts() reads the first (primary) chat. stdlib only; the network is
-whatever the wrapped adapters do, so a Slack Live plus a WebTapChat gives the freelancer's channel and
-the client's web panel the same plan and one approval from either side.
+"""FanoutChat: one Chat over several. The freelancer's desk uses it so the plan and the result land in
+the web panel (WebTapChat) and in Slack (SlackChat) both, and one approval from either side counts.
 
-Only owed.agent.executor.post may call post(). A failed post on any chat raises: never retried.
+post() writes to every chat in order, primary first, and returns the ts values joined with "|".
+wait_for_tap() polls each chat with its own ts and returns on the first approval from any of them.
+count_posts() reads the primary (first) chat. stdlib only; the network lives in the adapters it wraps,
+each of which counts its own live write. No retry: a retried post is a duplicate message.
+Only owed.agent.executor.post may call post().
+
+Both call shapes work: FanoutChat([web, slack]) and FanoutChat(web, slack).
 """
 from __future__ import annotations
 import time
@@ -16,10 +20,17 @@ POLL_S = 2.0
 
 
 class FanoutChat(Chat):
-    def __init__(self, chats: list[Chat]):
-        if not chats:
+    def __init__(self, *chats):
+        flat: list[Chat] = []
+        for c in chats:
+            flat.extend(c if isinstance(c, (list, tuple)) else [c])
+        if not flat:
             raise ValueError("FanoutChat needs at least one chat")
-        self.chats = list(chats)
+        self.chats: list[Chat] = flat
+
+    @property
+    def primary(self) -> Chat:
+        return self.chats[0]
 
     # ---- reads ----
     def wait_for_tap(self, message_ts: str, emoji: str = "white_check_mark", timeout_s: int = 600) -> bool:
@@ -37,7 +48,7 @@ class FanoutChat(Chat):
             time.sleep(POLL_S)
 
     def count_posts(self, contains: str) -> int:
-        return self.chats[0].count_posts(contains)
+        return self.primary.count_posts(contains)
 
     # ---- write (only executor.py may call this) ----
     def post(self, text: str, blocks: Optional[list] = None) -> str:

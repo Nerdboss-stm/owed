@@ -75,9 +75,12 @@ def load_mandate(overrides: Optional[dict] = None, path: Optional[Path] = None) 
     return mandate
 
 
-def _emails(scope) -> Optional[set[str]]:
-    """None -> whole ledger; a str or list of str -> that set of client mailboxes, lowercased."""
-    if scope is None:
+def _emails(scope, clients=None) -> Optional[set[str]]:
+    """None or ALL_CLIENTS ("*") -> whole ledger; a str or list of str -> that set of client mailboxes,
+    lowercased. `clients` (the desk's roster) narrows a whole-ledger scope to those mailboxes."""
+    if clients:
+        return {c.strip().lower() for c in clients if c and c.strip()}
+    if scope is None or scope == "*":
         return None
     items = [scope] if isinstance(scope, str) else list(scope)
     out = {e.strip().lower() for e in items if e and e.strip()}
@@ -414,6 +417,7 @@ def gate_and_execute(plan: Plan, plan_ts: str, *, ledger: Ledger, inbox: Inbox, 
 # ---------- Be the client: one invoice per email, web tap instead of Slack reaction ----------
 
 EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
+ALL_CLIENTS = "*"  # rehearse_for / execute_for over the whole ledger: the freelancer's desk, not one client
 
 
 def client_key(email: str) -> str:
@@ -451,18 +455,25 @@ def _as_chat(chat) -> Optional[Chat]:
 def rehearse_for(email, state_dir: Path, *, ledger: Optional[Ledger] = None,
                  inbox: Optional[Inbox] = None, calendar: Optional[Calendar] = None, today: Optional[date] = None,
                  chat=None, run_id: Optional[str] = None, drafter: Optional[Drafter] = None,
-                 mandate: Optional[dict] = None, mandate_path: Optional[Path] = None) -> tuple[Plan, str]:
+                 mandate: Optional[dict] = None, mandate_path: Optional[Path] = None,
+                 clients: Optional[set[str]] = None) -> tuple[Plan, str]:
     """Snapshot the apps, keep only the scoped clients' invoices (email: one address, a list of addresses,
-    or None for the whole ledger), rehearse against Shadow. Reads only unless a chat (or list of chats) is
-    given, in which case the plan is posted through the executor and its ts returned. state_dir is the
-    workspace: plans/, traces/, latest.json and sent.json live under it. mandate_path picks that
-    workspace's mandate.yaml. Adapters default to the live ones (needs credentials; never call from api/)."""
+    None or ALL_CLIENTS for the whole ledger; `clients` narrows a desk to its roster), rehearse against
+    Shadow. Reads only unless a chat (or list of chats) is given, in which case the plan is posted through
+    the executor and its ts returned. state_dir is the workspace: plans/, traces/, latest.json and sent.json
+    live under it. mandate_path picks that workspace's mandate.yaml. Adapters default to the live ones
+    (needs credentials; never call from api/)."""
     from owed.config import today as today_fn
-    emails = _emails(email)
+    emails = _emails(email, clients)
     chat = _as_chat(chat)
     state_dir = Path(state_dir)
-    label = "ALL" if emails is None else (client_key(next(iter(emails))) if len(emails) == 1 else f"MULTI{len(emails)}")
-    run_id = run_id or f"client-{label}-{datetime.now().strftime('%H%M%S')}"
+    if email is None or email == ALL_CLIENTS or emails is None:
+        label = "desk"  # the freelancer's desk: whole ledger, or its roster via `clients`
+    elif len(emails) == 1:
+        label = f"client-{client_key(next(iter(emails)))}"
+    else:
+        label = f"client-MULTI{len(emails)}"
+    run_id = run_id or f"{label}-{datetime.now().strftime('%H%M%S')}"
     if ledger is None or inbox is None:
         live_ledger, live_inbox, live_calendar, _ = _live_adapters(with_chat=False)
         ledger, inbox = ledger or live_ledger, inbox or live_inbox
@@ -472,7 +483,7 @@ def rehearse_for(email, state_dir: Path, *, ledger: Optional[Ledger] = None,
 
     snap = snapshot(ledger, inbox, calendar, today)
     mine = [i for i in snap["invoices"] if emails is None or (i.get("client_email") or "").lower() in emails]
-    who = "all clients" if emails is None else ", ".join(sorted(emails))
+    who = "all clients" if emails is None else (f"this desk's {len(emails)} client(s)" if clients else ", ".join(sorted(emails)))
     trace("read_ledger", None, f"{len(snap['invoices'])} overdue invoice(s) in the ledger, {len(mine)} for {who}",
           invoices=[i["invoice_id"] for i in mine])
     snap["invoices"] = mine
@@ -533,14 +544,14 @@ def send_receipt_for(email: str, run_id: str, invoice_id: str, state_dir: Path, 
 
 def execute_for(email, run_id: str, state_dir: Path, *, ledger: Optional[Ledger] = None,
                 inbox: Optional[Inbox] = None, calendar: Optional[Calendar] = None, chat=None,
-                plan_ts: str = "") -> Plan:
+                plan_ts: str = "", clients: Optional[set[str]] = None) -> Plan:
     """The tap -> re-verify live -> execute -> assert half, for a rehearsed plan. The tap cannot be
     skipped: with plan_ts the plan was already posted (rehearse_for with a chat); without it the plan is
     posted here first. chat is the tap channel: a WebTapChat for the web Approve, the freelancer's Slack
     (the default), or a list of both, in which case the plan posts to each and either one's approval
-    counts. Adapters default to the live ones. With an email, a plan holding another client's invoice
-    is refused; email=None means the whole-ledger plan from rehearse_for(None)."""
-    emails = _emails(email)
+    counts. Adapters default to the live ones. A plan holding an invoice outside the scope (an email, a
+    list, or the desk's `clients`) is refused; None or ALL_CLIENTS means the whole ledger."""
+    emails = _emails(email, clients)
     chat = _as_chat(chat)
     state_dir = Path(state_dir)
     plan_path = state_dir / "plans" / f"{run_id}.json"
