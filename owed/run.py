@@ -10,7 +10,7 @@ Rehearsal never writes live: every write in the loop below hits a Shadow adapter
 Only owed.agent.executor turns Intents into live writes, and only after the Slack tap (PLAN 3:45).
 """
 from __future__ import annotations
-import json
+import os
 from dataclasses import replace
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -42,14 +42,16 @@ class Tracer:
             path.write_text("")
 
     def __call__(self, phase: str, invoice_id: Optional[str], decision: str, **data: Any) -> TraceLine:
-        line = TraceLine(ts=datetime.now(timezone.utc).isoformat(), run_id=self.run_id, phase=phase,  # type: ignore[arg-type]
-                         invoice_id=invoice_id, decision=decision, data=data)
+        return self.write(TraceLine(ts=datetime.now(timezone.utc).isoformat(), run_id=self.run_id, phase=phase,  # type: ignore[arg-type]
+                                    invoice_id=invoice_id, decision=decision, data=data))
+
+    def write(self, line: TraceLine) -> TraceLine:
         self.lines.append(line)
         if self.path:
             with self.path.open("a") as f:
                 f.write(line.line() + "\n")
         if self.echo:
-            print(f"[{phase}] {decision}")
+            print(f"[{line.phase}] {line.decision}")
         return line
 
 
@@ -232,6 +234,82 @@ def run(*, ledger: Ledger, inbox: Inbox, calendar: Optional[Calendar], chat: Cha
     if rehearse_only:
         return plan
 
-    # PLAN 3:45: post plan to Slack (via executor), wait for the tap, re-verify live ledger,
-    # execute with idempotency keys in state/sent.json, assert end state.
-    raise NotImplementedError("run(): post/tap/execute/assert land at PLAN 3:45; use rehearse_only=True until then")
+    from owed.agent import asserter, executor  # the only live-write path
+
+    # 6. Post the plan to Slack and wait for the tap.
+    ts = executor.post(chat, slack_plan_text(plan))
+    trace("posted_plan", None, f"posted plan to Slack ({ts}): {plan_summary(plan)}", ts=ts)
+    if not plan.intents:
+        trace("done", None, "nothing to execute; refusals reported to the freelancer")
+        states = asserter.assert_end_state(plan, ledger, inbox, calendar, chat)
+        trace("assert", None, "end state ok: " + ", ".join(f"{s.app} {s.actual}/{s.expected}" for s in states))
+        return plan
+    timeout = int(os.environ.get("OWED_TAP_TIMEOUT", "600"))
+    tapped = chat.wait_for_tap(ts, timeout_s=timeout)
+    trace("tap", None, "tap received: freelancer approved the plan" if tapped else f"no tap within {timeout}s: nothing sends",
+          tapped=tapped)
+    if not tapped:
+        for key, its in _groups(plan).items():
+            plan.refusals.append(Refusal(its[0].invoice_id, its[0].step, "waiting_tap", "no tap; nothing sent"))
+            trace("decide", its[0].invoice_id, f"REFUSED {key}: waiting for tap", reason="waiting_tap")
+        plan.intents = []
+        _write_plan(state_dir, plan)
+        executor.post(chat, f"OWED result {run_id}: no tap, nothing sent")
+        trace("done", None, "no tap, nothing sent")
+        return plan
+
+    # 7. Re-verify live state after the tap. Money may have arrived since the rehearsal.
+    keep: list = []
+    aborts: list[str] = []
+    for key, its in _groups(plan).items():
+        iid, step = its[0].invoice_id, its[0].step
+        planned = next((i.payload.get("amount") for i in its if i.kind == "send_email"), None)
+        live = ledger.get(iid)
+        if live.paid or live.amount_due <= 0:
+            detail = f"paid since rehearsal (${(planned or live.amount_total):,.2f} received)"
+        elif planned is not None and abs(live.amount_due - float(planned)) > 0.005:
+            detail = f"balance changed since rehearsal (${float(planned):,.2f} -> ${live.amount_due:,.2f})"
+        elif live.last_chased_step >= step:
+            detail = f"step {step} already chased since rehearsal"
+        else:
+            trace("reverify", iid, f"REVERIFIED {iid} step {step}: still ${live.amount_due:,.2f} due, unchanged since rehearsal")
+            keep.extend(its)
+            continue
+        reason = "already_sent" if "already chased" in detail else "paid"
+        plan.refusals.append(Refusal(iid, step, reason, detail))
+        aborts.append(f"ABORTED: {detail} -- {iid} step {step}")
+        trace("abort", iid, f"ABORTED {iid} step {step}: {detail}", reason=reason)
+    plan.intents = keep
+    _write_plan(state_dir, plan)
+
+    # 8. Execute with idempotency keys, then 9. assert end state in every app.
+    for line in executor.execute(plan, ledger, inbox, calendar, chat, state_dir, run_id):
+        trace.write(line)
+    sent = sum(1 for i in plan.intents if i.kind == "send_email")
+    executor.post(chat, f"OWED result {run_id}: sent {sent}, aborted {len(aborts)}" + "".join(f"\n{a}" for a in aborts))
+    try:
+        states = asserter.assert_end_state(plan, ledger, inbox, calendar, chat)
+    except AssertionError as e:
+        trace("assert", None, f"END STATE MISMATCH: {e}")
+        raise
+    trace("assert", None, "end state ok: " + ", ".join(f"{s.app} {s.actual}/{s.expected}" for s in states),
+          states=[{"app": s.app, "expected": s.expected, "actual": s.actual} for s in states])
+    trace("done", None, f"sent {sent}, aborted {len(aborts)}, refused {len(plan.refusals) - len(aborts)}")
+    return plan
+
+
+def _groups(plan: Plan) -> dict[str, list]:
+    out: dict[str, list] = {}
+    for it in plan.intents:
+        out.setdefault(it.idempotency_key, []).append(it)
+    return out
+
+
+def slack_plan_text(plan: Plan) -> str:
+    from owed.agent.asserter import plan_post_marker
+    taps = sum(1 for i in plan.intents if i.requires_tap)
+    head = f"{plan_post_marker(plan.run_id)}: {plan_summary(plan)}"
+    if plan.intents:
+        head += "  -- react with :white_check_mark: to approve" + (" (step 3 needs it)" if taps else "")
+    body = "\n".join(format_plan(plan).splitlines()[1:-1])
+    return f"{head}\n{body}" if body else head
