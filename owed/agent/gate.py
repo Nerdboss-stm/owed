@@ -128,7 +128,7 @@ def classify(messages: list[Message], client_email: Optional[str] = None) -> Thr
     label = deterministic(text)
     if label:
         return label
-    load_env()
-    if os.environ.get("OWED_CLASSIFIER", "").lower() == "deterministic" or not os.environ.get("ANTHROPIC_API_KEY"):
+    from owed.config import offline
+    if offline():
         return "other"
     return model_classify(text)

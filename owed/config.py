@@ -33,6 +33,13 @@ def env(key: str, default: str | None = None) -> str:
     return val
 
 
+def offline() -> bool:
+    """True when no model call may be made: OWED_OFFLINE=1, or no ANTHROPIC_API_KEY. Classifier falls back
+    to its deterministic rules, verifier to its deterministic checks; the actor needs a scripted drafter."""
+    load_env()
+    return bool(os.environ.get("OWED_OFFLINE")) or not os.environ.get("ANTHROPIC_API_KEY")
+
+
 def today() -> date:
     """TODAY from .env so scenarios are reproducible; falls back to the ET wall clock."""
     load_env()

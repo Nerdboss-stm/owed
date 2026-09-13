@@ -21,8 +21,8 @@ import yaml
 from owed.adapters.snapshot import ShadowWorld, snapshot
 from owed.agent.gate import classify
 from owed.agent.planner import decide
-from owed.agent.verifier import deterministic_checks
-from owed.config import ROOT
+from owed.agent.verifier import verify
+from owed.config import ROOT, offline
 from owed.contract import Calendar, Chat, Inbox, Invoice, Ledger, Plan, Refusal, Step, TraceLine
 
 Drafter = Callable[[Invoice, Step, dict], dict]
@@ -114,13 +114,14 @@ def rehearse(world: ShadowWorld, mandate: dict, drafter: Optional[Drafter], run_
         trace("draft", iid, f"draft step {step}: subject {draft.get('subject', '')!r}, {len(draft.get('body', ''))} chars",
               subject=draft.get("subject"), body=draft.get("body"), amount=draft.get("amount"))
 
-        refusals = deterministic_checks(draft, inv, mandate)
+        refusals = verify(draft, inv, mandate)
         if refusals:
             plan.refusals.extend(refusals)
             for r in refusals:
                 trace("verify", iid, f"REFUSED {iid} step {step}: {r.detail}", reason=r.reason, step=step)
             continue
-        trace("verify", iid, f"PASS {iid} step {step}: amount {bal} unchanged, no discount, no new deadline, tone ok")
+        trace("verify", iid, f"PASS {iid} step {step}: amount {bal} unchanged, no discount, no new deadline, tone ok",
+              verifier="deterministic+model" if not offline() else "deterministic")
 
         # Exercise the shadow adapters: each write becomes an Intent, nothing leaves the process.
         if step == 2:
