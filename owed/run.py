@@ -140,6 +140,13 @@ def rehearse(world: ShadowWorld, mandate: dict, drafter: Optional[Drafter], run_
     return plan
 
 
+def _write_plan(state_dir: Path, plan: Plan) -> Path:
+    p = state_dir / "plans" / f"{plan.run_id}.json"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(plan.to_json())
+    return p
+
+
 def plan_summary(plan: Plan) -> str:
     sends = sum(1 for i in plan.intents if i.kind == "send_email")
     taps = sum(1 for i in plan.intents if i.requires_tap)
@@ -147,8 +154,15 @@ def plan_summary(plan: Plan) -> str:
 
 
 def rehearse_shadow(scenario: dict, *, drafter: Optional[Drafter] = None, mandate: Optional[dict] = None,
-                    run_id: Optional[str] = None, traces_dir: Optional[Path] = None) -> Plan:
-    """Scenario/snapshot dict -> Plan. Honors the scenario's `actor_draft` overrides and `mandate` overrides."""
+                    run_id: Optional[str] = None, traces_dir: Optional[Path] = None,
+                    state_dir: Optional[Path] = None, offline: bool = False) -> Plan:
+    """Scenario/snapshot dict -> Plan. Honors the scenario's `actor_draft` and `mandate` overrides.
+    offline=True: no model call anywhere (template draft, deterministic classifier and verifier)."""
+    if offline:
+        import os
+        os.environ["OWED_OFFLINE"] = "1"
+        from owed.agent.drafter import template_draft
+        drafter = drafter or template_draft
     run_id = run_id or f"rehearsal-{scenario.get('name', 'snapshot')}-{datetime.now().strftime('%H%M%S')}"
     world = ShadowWorld.from_snapshot(scenario)
     mandate = mandate or load_mandate(scenario.get("mandate"))
@@ -163,17 +177,44 @@ def rehearse_shadow(scenario: dict, *, drafter: Optional[Drafter] = None, mandat
         drafter = scripted
     trace = Tracer(run_id, traces_dir / f"{run_id}.jsonl" if traces_dir else None, echo=traces_dir is not None)
     plan = rehearse(world, mandate, drafter, run_id, trace)
-    trace("rehearsal_done", None, plan_summary(plan))
+    trace("rehearsal_done", None, plan_summary(plan),
+          intents=[i.idempotency_key for i in plan.intents], refusals=[r.reason for r in plan.refusals])
+    if state_dir:
+        _write_plan(Path(state_dir), plan)
     return plan
 
 
-# ---------- the documented entry point ----------
+def format_plan(plan: Plan) -> str:
+    """The plan as people read it: WILL SEND lines, REFUSED lines with reasons."""
+    by_key: dict[str, list] = {}
+    for it in plan.intents:
+        by_key.setdefault(it.idempotency_key, []).append(it)
+    out = [f"PLAN {plan.run_id}"]
+    for key, its in by_key.items():
+        send = next((i for i in its if i.kind == "send_email"), None)
+        extras = []
+        for i in its:
+            if i.kind == "create_payment_link":
+                extras.append("+ payment link")
+            elif i.kind == "create_event":
+                extras.append(f"+ calendar event {i.payload.get('start_iso', '')[:16].replace('T', ' ')}")
+            elif i.kind == "post_chat":
+                extras.append("+ slack post")
+        tap = "  REQUIRES TAP" if any(i.requires_tap for i in its) else ""
+        if send:
+            p = send.payload
+            amt = f"${p['amount']:,.2f}" if isinstance(p.get("amount"), (int, float)) else ""
+            out.append(f"WILL SEND  {send.invoice_id} step {send.step} -> {p.get('to')}  {p.get('subject')!r}  {amt}  "
+                       f"{' '.join(extras)}{tap}".rstrip())
+        else:
+            out.append(f"WILL DO    {key}  {' '.join(extras)}{tap}".rstrip())
+    for r in plan.refusals:
+        out.append(f"REFUSED    {r.invoice_id} step {r.step}: {r.reason} -- {r.detail}")
+    out.append(plan_summary(plan))
+    return "\n".join(out)
 
-def _write_plan(state_dir: Path, plan: Plan) -> Path:
-    p = state_dir / "plans" / f"{plan.run_id}.json"
-    p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(plan.to_json())
-    return p
+
+# ---------- the documented entry point ----------
 
 
 def run(*, ledger: Ledger, inbox: Inbox, calendar: Optional[Calendar], chat: Chat, today: date, run_id: str,

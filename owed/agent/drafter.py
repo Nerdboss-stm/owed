@@ -54,6 +54,30 @@ def actor_system(mandate: dict) -> str:
     )
 
 
+def template_draft(invoice: Invoice, step: Step, mandate: dict) -> dict:
+    """Offline stand-in for the actor: a fixed, mandate-compliant draft with no model call.
+    Same contract as draft(); the amount is still the ledger's number."""
+    amt = f"${invoice.amount_due:,.2f}"
+    due = f"{invoice.due_date.strftime('%B')} {invoice.due_date.day}"
+    first = (invoice.client_name.split() or ["there"])[0]
+    iid, sign = invoice.invoice_id, mandate.get("signoff", "")
+    if step == 1:
+        subject = f"Invoice {iid}"
+        body = (f"Hi {first},\n\nA quick note that invoice {iid} for {amt} was due on {due}. "
+                f"Could you let me know when it is scheduled?\n\nThanks,\n{sign}\n")
+    elif step == 2:
+        subject = f"Invoice {iid} - {amt} outstanding"
+        body = (f"Hi {first},\n\nInvoice {iid} for {amt} was due on {due} and is still open. "
+                f"Could you settle it, or let me know when I can expect it? A payment link is below.\n\nThanks,\n{sign}\n")
+    elif step == 3:
+        subject = f"Invoice {iid} - a quick call?"
+        body = (f"Hi {first},\n\nInvoice {iid} for {amt} has been open since {due}. "
+                f"Would a 15-minute call help sort it out? I will send a calendar invite for a slot that works.\n\nThanks,\n{sign}\n")
+    else:
+        raise ValueError(f"no draft for step {step}")
+    return {"subject": subject, "body": body, "amount": invoice.amount_due, "step": step}
+
+
 def _facts(invoice: Invoice, step: Step, days: int) -> dict:
     first = (invoice.client_name.split() or ["there"])[0]
     return {

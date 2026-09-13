@@ -30,11 +30,22 @@ A freelancer owed $3,400, 19 days overdue, who has drafted the chase email four 
 
 ## How to run
 
+No credentials needed for this one. It loads a scenario into the shadow adapters, plans, drafts (template), verifies, and prints what it would send and what it refused. Zero network, zero live writes.
+
+```
+pip install -r requirements.txt
+python run.py --scenario 01_clean_day12 --rehearse-only --offline
+```
+
+Any of the ten `scenarios/*.json` works in place of `01_clean_day12`. The trace lands in `traces/<run_id>.jsonl`, the plan in `state/plans/<run_id>.json`.
+
+With credentials:
+
 ```
 cp .env.example .env        # STRIPE_TEST_KEY, GOOGLE_CREDENTIALS_JSON, SLACK_BOT_TOKEN, SLACK_CHANNEL, ANTHROPIC_API_KEY
-pip install -r requirements.txt
-python run.py --scenario clean          # one full run against seeded test data
-python evals/run_evals.py               # all scenarios, regenerates the table below
+python run.py --scenario 01_clean_day12   # same rehearsal, real actor + verifier models
+python run.py --live                      # one full run against the seeded test apps, waits for the Slack tap
+python evals/run_evals.py                 # all scenarios, regenerates the table below
 ```
 
 All data is seeded test data. Stripe is in test mode. Gmail and Slack are test accounts.
