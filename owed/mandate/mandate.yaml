@@ -1,6 +1,7 @@
 # The mandate. Set once by the freelancer. Read by planner (day thresholds), drafter (voice, tone,
 # never-list) and verifier (never-list, tone). Same shape as evals/harness.default_mandate().
 steps: 3
+signoff: Saran         # how the freelancer signs
 voice: mine            # sample emails in owed/mandate/voice_samples.md
 tone:
   - never angry

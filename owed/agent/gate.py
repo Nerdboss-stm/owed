@@ -105,7 +105,8 @@ def model_classify(text: str) -> ThreadState:
     """One constrained model call. Raises if ANTHROPIC_API_KEY is missing; callers decide the fallback."""
     import anthropic  # imported here so the gate stays importable without the SDK
 
-    client = anthropic.Anthropic()
+    from owed.config import env
+    client = anthropic.Anthropic(api_key=env("ANTHROPIC_API_KEY"))
     r = client.messages.create(
         model=MODEL,
         max_tokens=256,
