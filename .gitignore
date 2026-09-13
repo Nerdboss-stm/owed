@@ -12,6 +12,9 @@ traces/*
 !traces/live-clean-3.jsonl
 !traces/live-paid-1.jsonl
 !traces/live-inject-1.jsonl
+!traces/live-close-1.jsonl
+!traces/live-step3-1.jsonl
+!traces/live-scale-1.jsonl
 .pytest_cache/
 .claude/worktrees/
 .claude/settings.local.json
