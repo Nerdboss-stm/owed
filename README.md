@@ -73,12 +73,27 @@ _Last eval run 2026-09-13 14:55 (online drafts): 10/10 pass._
 
 Full trace of one real run, tap to send, end state asserted: [traces/live-clean-2.jsonl](traces/live-clean-2.jsonl). Run again a minute later and it refuses with `already_sent`.
 
-**What still fails:** _filled at 5:15 PM ET_
+## Live runs today (real apps, test accounts)
+
+Five runs against Stripe test mode, a Gmail test inbox, Google Calendar, and a Slack test channel. Each trace is the file the run wrote, unedited.
+
+- [live-clean-1](traces/live-clean-1.jsonl): the fail-closed example. Plan posted, tap received, live ledger re-verified. The executor recorded `INV-0042:2` as pending in `state/sent.json`, then the first live write (the Stripe price for the payment link) was refused because the key was a restricted key without write permission. The run raised and stopped. Reads afterwards confirmed zero payment links, zero emails, ledger unchased, so the pending key was cleared by hand. No refusal reason, no send.
+- [live-clean-2](traces/live-clean-2.jsonl): the clean send. Same invoice, secret key. Tap received, re-verified, payment link created, one email sent as a reply in the client thread, ledger marked chased step 2, end state asserted 1/1 in Stripe, Gmail, and Slack. No refusal.
+- [live-clean-3](traces/live-clean-3.jsonl): the same run one minute later. Refused at rehearsal with `already_sent` (step 2 already chased, step 3 due at day 21). Plan posted with zero intents, nothing sent.
+- [live-paid-1](traces/live-paid-1.jsonl): money arrived between rehearsal and send. INV-0043 ($2,150, 12 days overdue) planned for step 2, plan posted, invoice marked paid in Stripe during the tap wait, tap received, live ledger re-read. Aborted with reason `paid`: "ABORTED INV-0043 step 2: paid since rehearsal ($2,150.00 received)". Nothing sent.
+- [live-inject-1](traces/live-inject-1.jsonl): the client email for INV-0044 ($1,800, 15 days overdue) contained an instruction aimed at the agent. The deterministic gate classified the thread as `injection` before any model call. Refused at rehearsal with reason `injection`, plan posted with zero intents, ledger read back unchanged.
+
+**What still fails or is not proven:**
+
+- The thread classifier needs a model call for ambiguous client replies. The deterministic rules cover says-paid, dispute, injection, document requests, and dated promises; anything else goes to the model, and offline it becomes `other`, which chases. A vague reply like "will get this sorted this week" was labeled `promises_date` by the model in one live read and `other` in another.
+- Step 3 (calendar event plus call proposal, tap required) passes the eval harness and AC6/AC7 against stub adapters. It was not exercised live today; no invoice reached day 21.
+- The Vercel Blob push after assert is written and skipped without `BLOB_READ_WRITE_TOKEN`. The token was not set on this machine, so the upload path has not run against Blob.
+- Astra was not available, so actor and verifier are both Claude in different roles rather than two vendors.
 
 ## Models
 
-Actor drafts the email. Verifier checks it. They are different model calls with different roles and never share a prompt.
+Actor drafts the email. Verifier checks it. They are different model calls with different system prompts and never share a prompt; the verifier never sees the voice samples or the actor's instructions. Both are `claude-opus-5` today. The actor receives ledger facts only, never client email text. The classifier is one constrained call that runs only when the deterministic rules do not match.
 
 ## Built today
 
-Built solo on Sep 13, 2026 during the Multi-App AI Agent Hackathon. The verifier gate pattern reuses an idea from a prior project of mine; all code here is new.
+Built solo on Sep 13, 2026 during the Multi-App AI Agent Hackathon. First commit 1:39 PM ET, last commit 3:10 PM ET, all on `main`. The verifier gate pattern reuses an idea from a prior project of mine; all code here is new.

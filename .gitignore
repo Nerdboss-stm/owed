@@ -7,6 +7,11 @@ credentials.json
 state/*
 !state/rehearsals/
 traces/*
+!traces/live-clean-1.jsonl
 !traces/live-clean-2.jsonl
+!traces/live-clean-3.jsonl
+!traces/live-paid-1.jsonl
+!traces/live-inject-1.jsonl
+.pytest_cache/
 .claude/worktrees/
 .claude/settings.local.json

@@ -1,0 +1,8 @@
+{"ts": "2026-09-13T18:52:01.594028+00:00", "run_id": "live-clean-3", "phase": "read_ledger", "invoice_id": null, "decision": "1 overdue invoice(s) as of 2026-09-13", "data": {"invoices": [{"invoice_id": "INV-0042", "amount_due": 3400.0, "days": 19}]}}
+{"ts": "2026-09-13T18:52:01.594561+00:00", "run_id": "live-clean-3", "phase": "read_thread", "invoice_id": "INV-0042", "decision": "thread 1a09bfc5382ecee6: 3 message(s)", "data": {}}
+{"ts": "2026-09-13T18:52:05.737611+00:00", "run_id": "live-clean-3", "phase": "classify", "invoice_id": "INV-0042", "decision": "client thread state: other", "data": {"state": "other"}}
+{"ts": "2026-09-13T18:52:05.738242+00:00", "run_id": "live-clean-3", "phase": "decide", "invoice_id": "INV-0042", "decision": "REFUSED INV-0042 step 2: step 2 already sent (day 19); step 3 at day 21", "data": {"reason": "already_sent", "step": 2}}
+{"ts": "2026-09-13T18:52:05.738910+00:00", "run_id": "live-clean-3", "phase": "rehearsal_done", "invoice_id": null, "decision": "would send 0, refused 1, 0 intent(s) need the tap", "data": {"intents": [], "refusals": ["already_sent"]}}
+{"ts": "2026-09-13T18:52:05.936327+00:00", "run_id": "live-clean-3", "phase": "posted_plan", "invoice_id": null, "decision": "posted plan to Slack (1789325525.811459): would send 0, refused 1, 0 intent(s) need the tap", "data": {"ts": "1789325525.811459"}}
+{"ts": "2026-09-13T18:52:05.936705+00:00", "run_id": "live-clean-3", "phase": "done", "invoice_id": null, "decision": "nothing to execute; refusals reported to the freelancer", "data": {}}
+{"ts": "2026-09-13T18:52:06.029932+00:00", "run_id": "live-clean-3", "phase": "assert", "invoice_id": null, "decision": "end state ok: slack 1/1", "data": {}}
