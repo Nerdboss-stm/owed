@@ -1,0 +1,9 @@
+anthropic
+stripe
+google-api-python-client
+google-auth-oauthlib
+slack_sdk
+pyyaml
+pytest
+fastapi
+uvicorn
