@@ -50,6 +50,37 @@ def post(chat: Chat, text: str) -> str:
     return chat.post(text)
 
 
+def reconcile_links(ledger: Ledger, today, state_dir: Path, run_id: str) -> list[TraceLine]:
+    """A payment link settles a Checkout Session, not the invoice. For every open overdue invoice with a
+    paid session, mark the invoice paid out of band so the ledger reads paid and the receipt path fires.
+    Idempotent: an invoice that already reads paid is never touched; each session id is recorded once."""
+    link_payments = getattr(ledger, "link_payments", None)
+    mark_paid = getattr(ledger, "mark_paid_out_of_band", None)
+    if not callable(link_payments) or not callable(mark_paid):
+        return []  # stub / shadow ledgers: nothing to reconcile
+    state_dir = Path(state_dir)
+    sent = load_sent(state_dir)
+    lines: list[TraceLine] = []
+    for inv in ledger.overdue(today):
+        if inv.paid:
+            continue
+        for pay in link_payments(inv.invoice_id):
+            key = f"{inv.invoice_id}:reconcile:{pay['session_id']}"
+            if key in sent:
+                continue
+            sent[key] = {"status": "pending", "run_id": run_id, "ts": _now(), "kinds": ["mark_paid_out_of_band"]}
+            _save_sent(state_dir, sent)
+            mark_paid(inv.invoice_id, pay["session_id"], pay["amount"])
+            sent[key] = {"status": "sent", "run_id": run_id, "ts": _now(), "kinds": ["mark_paid_out_of_band"],
+                         "results": {"amount": pay["amount"], "paid_at": pay["paid_at"]}}
+            _save_sent(state_dir, sent)
+            lines.append(_line(run_id, "read_ledger", inv.invoice_id,
+                               f"RECONCILED {inv.invoice_id}: payment link paid ${pay['amount']:,.2f} at {pay['paid_at'][:16]} "
+                               f"({pay['session_id']}); invoice marked paid out of band", reconciled=True, **pay))
+            break  # one paid session settles the invoice
+    return lines
+
+
 def _group(plan: Plan) -> list[tuple[str, list[Intent]]]:
     groups: dict[str, list[Intent]] = {}
     for it in plan.intents:

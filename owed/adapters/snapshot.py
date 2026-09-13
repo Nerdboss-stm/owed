@@ -37,9 +37,12 @@ def snapshot(ledger: Ledger, inbox: Inbox, calendar: Optional[Calendar], today: 
     threads: dict[str, list[Message]] = {}
     for inv in invoices:
         if not inv.thread_id and hasattr(inbox, "latest_thread_id"):
-            # Prefer the thread that names this invoice; else the client's latest thread.
+            # Only a thread that names this invoice counts; a reply about another invoice must not bleed in.
+            # "+tag" addresses share a mailbox, so the base address is searched too.
+            local, _, domain = inv.client_email.partition("@")
+            base = f"{local.split('+')[0]}@{domain}"
             find = inbox.latest_thread_id  # type: ignore[attr-defined]
-            inv.thread_id = find(f"from:{inv.client_email} {inv.invoice_id}") or find(f"from:{inv.client_email}")
+            inv.thread_id = find(f"from:({inv.client_email} OR {base}) {inv.invoice_id}")
         if inv.thread_id and inv.thread_id not in threads:
             threads[inv.thread_id] = inbox.thread(inv.thread_id)
     free = calendar.free_slots(today, n_slots) if calendar else []

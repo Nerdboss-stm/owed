@@ -276,6 +276,10 @@ def run(*, ledger: Ledger, inbox: Inbox, calendar: Optional[Calendar], chat: Cha
     state_dir, traces_dir = Path(state_dir), Path(traces_dir)
     trace = Tracer(run_id, traces_dir / f"{run_id}.jsonl")
 
+    if not rehearse_only:  # 0. payment links settle outside the invoice; bring the ledger up to date first
+        from owed.agent import executor
+        for line in executor.reconcile_links(ledger, today, state_dir, run_id):
+            trace.write(line)
     snap = snapshot(ledger, inbox, calendar, today)
     world = ShadowWorld.from_snapshot(snap)
     plan = rehearse(world, mandate, drafter, run_id, trace)
@@ -372,7 +376,10 @@ def _gated(plan: Plan, ledger: Ledger, inbox: Inbox, calendar: Optional[Calendar
         trace("done", None, "no tap, nothing sent")
         return plan
 
-    # 7. Re-verify live state after the tap. Money may have arrived since the rehearsal.
+    # 7. Re-verify live state after the tap. Money may have arrived since the rehearsal, maybe via the link.
+    from owed.config import today as today_fn
+    for line in executor.reconcile_links(ledger, today_fn(), state_dir, run_id):
+        trace.write(line)
     keep: list = []
     aborts: list[str] = []
     for key, its in _groups(plan).items():

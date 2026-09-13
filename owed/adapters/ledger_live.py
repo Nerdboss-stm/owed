@@ -85,9 +85,25 @@ class StripeLedger(Ledger):
                 out.append(self._to_invoice(inv))
         return out
 
-    def count_links(self, invoice_id: str) -> int:
+    def _links_for(self, invoice_id: str) -> list:
         links = retry_read(lambda: list(stripe.PaymentLink.list(limit=100, active=True).auto_paging_iter()))
-        return sum(1 for l in links if _meta(l.metadata).get("invoice_id") == invoice_id)
+        return [l for l in links if _meta(l.metadata).get("invoice_id") == invoice_id]
+
+    def count_links(self, invoice_id: str) -> int:
+        return len(self._links_for(invoice_id))
+
+    def link_payments(self, invoice_id: str) -> list[dict]:
+        """Completed checkout sessions on this invoice's payment links. A link settles a session, not the
+        invoice; executor.reconcile_links turns these into 'paid out of band' on the invoice."""
+        out = []
+        for l in self._links_for(invoice_id):
+            sessions = retry_read(lambda: list(
+                stripe.checkout.Session.list(payment_link=l.id, limit=100).auto_paging_iter()))
+            for s in sessions:
+                if s.payment_status == "paid":
+                    out.append({"session_id": s.id, "amount": (s.amount_total or 0) / 100,
+                                "paid_at": datetime.fromtimestamp(s.created, tz=timezone.utc).isoformat(), "link": l.url})
+        return out
 
     # ---- writes (only executor.py may call these) ----
     def create_payment_link(self, invoice_id: str) -> str:
@@ -111,6 +127,15 @@ class StripeLedger(Ledger):
             self._ids[invoice_id],
             metadata={"last_chased_step": str(step), "last_chased_at": datetime.now(timezone.utc).isoformat()},
         )
+
+    def mark_paid_out_of_band(self, invoice_id: str, session_id: str, amount: float) -> None:
+        """The payment arrived through the link; record it on the invoice so the ledger reads paid."""
+        self.get(invoice_id)
+        live_write()
+        stripe.Invoice.pay(self._ids[invoice_id], paid_out_of_band=True)
+        stripe.Invoice.modify(self._ids[invoice_id], metadata={
+            "paid_via_link": session_id, "paid_amount": f"{amount:.2f}",
+            "paid_at": datetime.now(timezone.utc).isoformat()})
 
     def mark_receipted(self, invoice_id: str) -> None:
         self.get(invoice_id)
