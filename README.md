@@ -2,7 +2,7 @@
 
 OWED is an agent that collects overdue freelance invoices, and rehearses every email against a shadow inbox before it is allowed to send one.
 
-[Live desk](https://rehearsal-room-ui-e89f5f.vercel.app/freelancer) · [Be the client](https://rehearsal-room-ui-e89f5f.vercel.app/client) · [Open your own desk](https://rehearsal-room-ui-e89f5f.vercel.app/desk) · Demo video (2:00): _link goes here_
+[Live desk](https://rehearsal-room-ui-e89f5f.vercel.app/freelancer) · [Be the client](https://rehearsal-room-ui-e89f5f.vercel.app/client) · [Open your own desk](https://rehearsal-room-ui-e89f5f.vercel.app/desk) · Demo video (2:00): https://www.loom.com/share/115c66917fea4020a0b5f3179542fc68
 
 ![Priya's desk with a rehearsed plan open](docs/desk.png)
 
