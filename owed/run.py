@@ -89,7 +89,7 @@ def rehearse(world: ShadowWorld, mandate: dict, drafter: Optional[Drafter], run_
     for inv in invoices:
         iid, days, bal = inv.invoice_id, inv.days_overdue(today), _money(inv.amount_due)
         if iid in seen:
-            trace("decide", iid, f"SKIP duplicate ledger row for {iid}: one chase, not two", reason="duplicate")
+            trace("decide", iid, f"SKIP duplicate ledger row for {iid}: one chase, not two", skipped="duplicate_row")
             continue
         seen.add(iid)
 
