@@ -1,17 +1,24 @@
-# The mandate. Set once by the freelancer. Read by planner (day thresholds), drafter (voice, tone,
-# never-list) and verifier (never-list, tone). Same shape as evals/harness.default_mandate().
+# The mandate. Set once by the freelancer, edited from the desk. Read by planner (day thresholds),
+# drafter (voice, tone, never-list) and verifier (never-list, tone).
 steps: 3
-signoff: Saran         # how the freelancer signs
-voice: mine            # sample emails in owed/mandate/voice_samples.md
+signoff: Saran
+voice: mine
 tone:
-  - never angry
-  - never apologetic
-  - never threatening
+- never angry
+- never apologetic
+- never threatening
 never:
-  - offer a discount
-  - change the amount
-  - promise a deadline extension
+- offer a discount
+- change the amount
+- promise a deadline extension
 approval: nothing past step 2 sends without my tap
-step_1: {day: 3,  action: soft nudge}
-step_2: {day: 10, action: direct ask + payment link}
-step_3: {day: 21, action: propose a call (calendar slot), requires_tap: true}
+step_1:
+  day: 3
+  action: soft nudge
+step_2:
+  day: 10
+  action: direct ask + payment link
+step_3:
+  day: 21
+  action: propose a call (calendar slot)
+  requires_tap: true
