@@ -33,6 +33,11 @@
   .mform input, .iform input { background: #0a0e14; border: 1px solid #2a3644; border-radius: 8px; padding: 8px 10px; color: #e6edf3; font-size: 15px; font-family: inherit; }
   .full { grid-column: 1 / -1; }
   .offline { color: #d29922; font-size: 16px; margin-bottom: 20px; }
+  .steps { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; color: #b7c2cf; font-size: 15px; margin: 0 0 18px; }
+  .steps .arrow { color: #3a4a5c; }
+  .badge, .steps b { display: inline-flex; width: 22px; height: 22px; border-radius: 50%; background: #0d1b2e; border: 1px solid #1f3a5a; color: #58a6ff; font-size: 12px; font-weight: 700; align-items: center; justify-content: center; margin-right: 8px; vertical-align: middle; }
+  .prev { font-size: 13px; margin-left: 8px; white-space: nowrap; }
+  .row-sub { color: #8b98a8; font-size: 14px; margin-top: 2px; }
   .apps { display: inline-flex; gap: 10px; margin-left: 10px; font-size: 13px; }
   .apps span { color: #8b98a8; } .apps span.ok { color: #3fb950; } .apps span.bad { color: #f85149; }
   details.inner { border-top: 0; }
@@ -49,13 +54,14 @@
   </div>
   <div id="statusline" class="statusline">no rehearsal yet today</div>
   <div id="offline" class="offline hidden">the agent runtime is offline</div>
+  <div class="steps"><span><b>1</b> The overdue ledger, read live from Stripe</span><span class="arrow">→</span><span><b>2</b> Rehearse: drafts in a shadow inbox, a second model checks each one</span><span class="arrow">→</span><span><b>3</b> Approve: re-verify the ledger, then send</span></div>
 
   <div id="ladder" class="ladder"></div>
 
   <div class="grid">
     <div class="stack">
       <section class="card">
-        <h2>Overdue <span id="overdueSrc" class="src"></span><a href="#" id="newInv" class="src" style="color:#58a6ff">Work completed, add invoice</a></h2>
+        <h2><span><span class="badge">1</span>Overdue</span> <span id="overdueSrc" class="src"></span><a href="#" id="newInv" class="src" style="color:#58a6ff">Work completed, add invoice</a></h2>
         <form id="iform" class="iform hidden">
           <label>client name <input name="client_name" required maxlength="60"></label>
           <label>client email <input name="email" type="email" required></label>
@@ -72,7 +78,7 @@
       </section>
 
       <section class="card">
-        <h2>Today's rehearsal <span id="rehSrc" class="src"></span></h2>
+        <h2><span><span class="badge">2</span>Today's rehearsal</span> <span id="rehSrc" class="src"></span></h2>
         <div class="body">
           <div class="grp send">Will send <span id="sendN" class="mono"></span></div>
           <div id="sends"><div class="item mute">press Rehearse today</div></div>
@@ -84,7 +90,7 @@
           </details>
         </div>
         <div class="approve">
-          <button id="approve" class="btn btn-ok" disabled>Approve ✅</button>
+          <span class="badge">3</span><button id="approve" class="btn btn-ok" disabled>Approve ✅</button>
           <span id="approveNote" class="mute small"></span>
         </div>
         <div class="mandate"><span id="mandateLine" class="grow">mandate…</span><a href="#" id="mandateEdit">Edit</a></div>
@@ -146,6 +152,7 @@
     $('ladder').innerHTML = (l || []).map((r, i) => `${i ? '<span class="arrow">→</span>' : ''}<span class="rung"><b>Step ${r.step}</b> · day ${r.day} · ${esc(r.action)}</span>`).join('');
   }
   function renderOverdue(d, src) {
+    clientsById = Object.fromEntries((d.invoices || []).map(r => [r.invoice_id, r.client_name || r.client_email]));
     $('overdueSrc').textContent = src;
     $('overdue').querySelector('tbody').innerHTML = d.invoices.length ? d.invoices.map(r => {
       const g = r.ladder || {};
@@ -156,6 +163,7 @@
           <td class="num"><span class="pos"><span class="chip ${g.last_step ? 'chip-info' : 'chip-mute'}">${esc(chip)}</span><span class="nx ${g.due_now ? 'now' : ''}">${esc(g.next || '')}</span></span></td></tr>`; }).join('')
       : `<tr><td colspan="4" class="mute">nothing overdue</td></tr>`;
   }
+  document.addEventListener('click', (e) => { const a = e.target.closest('a.prev'); if (!a) return; e.preventDefault(); const el = document.getElementById(a.dataset.pv); if (el) { el.classList.toggle('hidden'); a.textContent = el.classList.contains('hidden') ? 'Preview' : 'Hide'; } });
   async function loadOverdue() {
     try {
       const d = await api('GET', '/freelancer/overdue');
@@ -171,11 +179,33 @@
   }
 
   // ---------- rehearsal ----------
+  const STEP = { 1: 'nudge', 2: 'direct ask + payment link', 3: 'propose a call' };
+  const WHY = {
+    injection: 'the client\'s email contained an instruction; classified, not followed',
+    disputes: 'the client disputes it; escalated to you, no email to them',
+    promises_date: 'the client promised a date; the agent waits',
+    says_paid: 'the client says it is paid; the ledger still shows it open, so no chase; flagged to you',
+    paid: 'paid since rehearsal; nothing to chase',
+    verifier_discount: 'the draft offered a discount; the mandate says never',
+    verifier_amount: 'the draft changed the amount; the mandate says never',
+    verifier_deadline: 'the draft promised a deadline extension; the mandate says never',
+    verifier_tone: 'the draft broke the tone rule',
+  };
+  let clientsById = {};
+  const who = (iid, to) => clientsById[iid] || (to ? to.split('@')[0] : iid);
   function sendLine(it, all) {
     const p = it.payload || {};
     const extras = all.filter(x => x.idempotency_key === it.idempotency_key && x.kind !== 'send_email')
-      .map(x => x.kind === 'create_payment_link' ? '+ payment link' : x.kind === 'create_event' ? '+ calendar event' : x.kind === 'post_chat' ? '+ slack post' : '').filter(Boolean).join(' ');
-    return `<div class="item"><span class="send">${p.receipt ? 'WILL SEND receipt' : 'WILL SEND'}</span> ${esc(it.invoice_id)} step ${esc(it.step)} → ${esc(p.to)} <span class="why">“${esc(p.subject)}”</span> <span class="mono">${esc(money(p.amount))}</span> <span class="mute">${esc(extras)}</span>${it.requires_tap ? ' <span class="chip chip-warn">needs tap</span>' : ''}</div>`;
+      .map(x => x.kind === 'create_payment_link' ? '+ payment link' : x.kind === 'create_event' ? '+ calendar invite' : x.kind === 'post_chat' ? '+ slack post' : '').filter(Boolean).join(' ');
+    const what = p.receipt ? 'receipt, paid in full' : (STEP[it.step] || `step ${it.step}`);
+    const id = 'pv-' + it.idempotency_key.replace(/[^a-z0-9]/gi, '-') + (p.receipt ? '-r' : '');
+    return `<div class="item"><span class="send">WILL SEND</span> <b>${esc(who(it.invoice_id, p.to))}</b> · ${esc(it.invoice_id)} · ${esc(what)} · <span class="mono">${esc(money(p.amount))}</span> <span class="mute">${esc(extras)}</span>${it.requires_tap ? ' <span class="chip chip-warn">needs your tap</span>' : ''}<a href="#" class="prev" data-pv="${id}">Preview</a>
+      <div class="row-sub">to ${esc(p.to)}</div>
+      <pre class="mail hidden" id="${id}">Subject: ${esc(p.subject)}\n\n${esc(p.body)}</pre></div>`;
+  }
+  function refusedLine(r) {
+    const what = STEP[r.step] || (r.step === 0 ? 'receipt' : `step ${r.step}`);
+    return `<div class="item"><span class="refused">REFUSED</span> <b>${esc(who(r.invoice_id))}</b> · ${esc(r.invoice_id)} · ${esc(what)} <span class="chip chip-bad">${esc(r.reason)}</span><div class="row-sub">${esc(WHY[r.reason] || r.detail)}</div></div>`;
   }
   function waitLine(r) {
     // "step 2 already sent (day 12); step 3 at day 21" -> "INV · step 2 sent day 12 · next step 3 at day 21"
@@ -229,7 +259,7 @@
     else if (!has) { $('sends').innerHTML = `<div class="item mute">${s.phase === 'none' ? 'press Rehearse today' : 'nothing'}</div>`; $('refs').innerHTML = `<div class="item mute">none</div>`; $('waits').innerHTML = ''; }
     else {
       $('sends').innerHTML = (sends.map(x => sendLine(x, intents)).join('') + others.map(o => `<div class="item"><span class="send">WILL DO</span> ${esc(o.kind)} ${esc(o.invoice_id)} step ${esc(o.step)}</div>`).join('')) || `<div class="item mute">nothing to send today</div>`;
-      $('refs').innerHTML = refused.map(r => `<div class="item"><span class="refused">REFUSED</span> ${esc(r.invoice_id)} step ${esc(r.step)}: <span class="chip chip-bad">${esc(r.reason)}</span> <span class="why">${esc(r.detail)}</span></div>`).join('') || `<div class="item mute">none</div>`;
+      $('refs').innerHTML = refused.map(refusedLine).join('') || `<div class="item mute">none</div>`;
       $('waits').innerHTML = waiting.map(waitLine).join('') || `<div class="item mute">none</div>`;
     }
     $('rehSrc').textContent = s.run_id ? `${s.run_id} · ${s.phase}` : '';

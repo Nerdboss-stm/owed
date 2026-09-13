@@ -192,6 +192,13 @@ def _receipt_in_background(email: str, d: Path, run_id: str, invoice_id: str, we
             _set_meta(d, run_id, receipt_error=f"{type(e).__name__}: {str(e)[:300]}")
 
 
+def _sender() -> Optional[str]:
+    import os
+    from owed.config import load_env
+    load_env()
+    return os.environ.get("FREELANCER_EMAIL") or None
+
+
 # ---------- endpoints ----------
 
 class StartBody(BaseModel):
@@ -275,7 +282,7 @@ def status(email: str):
     d = _dir(email)
     meta = _latest(d)
     if not meta:
-        return JSONResponse({"email": email, "phase": "none", "run_id": None, "runs": []},
+        return JSONResponse({"email": email, "phase": "none", "run_id": None, "runs": [], "sender": _sender()},
                             headers={"Cache-Control": "no-store"})
     run_id = meta["run_id"]
     plan = _read(d / "plans" / f"{run_id}.json") or {}
@@ -294,7 +301,7 @@ def status(email: str):
         "receipt_sent": bool(meta.get("receipt_sent")), "receipt_error": meta.get("receipt_error"),
         "runs": _run_history(d, invoice.get("invoice_id")),
         "plan": plan, "end_state": plan.get("end_state"), "trace": _trace_lines(d, run_id),
-        "posts": chat.posts()[-6:], "closed": closed,
+        "posts": chat.posts()[-6:], "closed": closed, "sender": _sender(),
     }, headers={"Cache-Control": "no-store"})
 
 

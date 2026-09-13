@@ -31,6 +31,7 @@
 
   <p class="lead" id="lead">Be the client who owes $3,400: the agent will chase you for real, and you decide whether it may.</p>
   <div id="offline" class="offline hidden">the agent runtime is offline</div>
+  <div id="sender" class="note" style="margin:-16px 0 24px">Emails arrive from Priya's test Gmail account, signed by the freelancer. Check spam if nothing lands within a minute.</div>
 
   <div class="start" id="startRow">
     <input id="email" class="field" type="email" placeholder="your email" autocomplete="email">
@@ -176,6 +177,7 @@
       const s = await api('GET', `/client/status?email=${encodeURIComponent(email())}`);
       $('offline').classList.add('hidden');
       try { localStorage.setItem(cacheKey(), JSON.stringify(s)); } catch (e) {}
+      if (s.sender) $('sender').textContent = `Emails arrive from ${s.sender}, Priya's test Gmail account, signed by the freelancer. Check spam if nothing lands within a minute.`;
       render(s, false);
     } catch (e) {
       $('offline').textContent = 'the agent runtime is offline' + (e.message && !/Failed to fetch|NetworkError|Load failed/.test(e.message) ? ` (${e.message})` : '');
