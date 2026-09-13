@@ -50,6 +50,8 @@ class DevHandler(SimpleHTTPRequestHandler):
             return
         if path == "/":
             self.path = "/index.html"
+        elif path in ("/freelancer", "/client"):  # the same rewrites vercel.json declares
+            self.path = path + ".html"
         super().do_GET()
 
     def log_message(self, fmt, *args):  # keep the terminal readable

@@ -16,9 +16,13 @@ SOURCES = (("scenario", os.path.join(ROOT, "scenarios")),
 
 
 def list_scenarios() -> list[dict]:
+    """The ten scenarios/*.json when they exist (their 01_..10_ prefixes are the SPEC order);
+    the ui/fixtures set only as a fallback for a checkout without scenarios/."""
     out: list[dict] = []
     seen: set[str] = set()
     for source, folder in SOURCES:
+        if out:
+            break
         for path in sorted(glob.glob(os.path.join(folder, "*.json"))):
             name = os.path.splitext(os.path.basename(path))[0]
             if name.startswith("_") or name in seen:
@@ -31,12 +35,12 @@ def list_scenarios() -> list[dict]:
             out.append({
                 "name": name,
                 "order": data.get("order", 999),
-                "title": data.get("title", name.replace("_", " ")),
+                "title": data.get("title") or data.get("row") or name.replace("_", " "),
                 "description": data.get("description", ""),
                 "expected": data.get("expected", ""),
                 "source": source,
             })
-    out.sort(key=lambda s: (s["order"], s["name"]))
+    out.sort(key=lambda s: (s["order"], s["name"]) if s["source"] == "fixture" else (0, s["name"]))
     return out
 
 

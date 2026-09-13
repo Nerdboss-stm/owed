@@ -411,6 +411,36 @@ def rehearse_for(email: str, state_dir: Path, *, ledger: Ledger, inbox: Inbox, c
     return plan, ts
 
 
+def send_receipt_for(email: str, run_id: str, invoice_id: str, state_dir: Path, *, ledger: Ledger, inbox: Inbox,
+                     chat: Chat, mandate: Optional[dict] = None) -> list[TraceLine]:
+    """Be the client, last step: the invoice is paid, so send one receipt in the chase thread and post the
+    CLOSED line. A fixed template, no model. Idempotent on key <invoice_id>:receipt through the executor."""
+    from owed.agent import executor  # the only live-write path
+    from owed.contract import Intent
+    state_dir = Path(state_dir)
+    inv = ledger.get(invoice_id)
+    sign = (mandate or load_mandate()).get("signoff", "")
+    first = (inv.client_name.split() or ["there"])[0]
+    amount = _money(inv.amount_total)
+    thread_id = inv.thread_id
+    if not thread_id and hasattr(inbox, "latest_thread_id"):
+        thread_id = inbox.latest_thread_id(f"subject:{invoice_id}")  # type: ignore[attr-defined]
+    plan = Plan(run_id=run_id, created_at=datetime.now(timezone.utc), intents=[Intent(
+        kind="send_email", invoice_id=invoice_id, step=0, idempotency_key=f"{invoice_id}:receipt",
+        payload={"to": inv.client_email, "subject": f"Receipt for invoice {invoice_id}", "amount": inv.amount_total,
+                 "thread_id": thread_id,
+                 "body": f"Hi {first},\n\nPayment of {amount} for invoice {invoice_id} has come through. "
+                         f"Thank you, and it was good working with you.\n\n{sign}\n"})])
+    trace = Tracer(run_id, state_dir / "traces" / f"{run_id}.jsonl", append=True)
+    trace("reverify", invoice_id, f"CLOSED {invoice_id}: {amount} received; sending receipt in the chase thread")
+    lines = executor.execute(plan, ledger, inbox, None, chat, state_dir, run_id)
+    for line in lines:
+        trace.write(line)
+    executor.post(chat, f"OWED closed {invoice_id}: {amount} received, receipt sent to {inv.client_email}")
+    trace("done", invoice_id, f"closed {invoice_id}, receipt sent")
+    return lines
+
+
 def execute_for(email: str, run_id: str, state_dir: Path, *, ledger: Ledger, inbox: Inbox,
                 calendar: Optional[Calendar], chat: Chat, plan_ts: str = "") -> Plan:
     """Tap (the approval flag, via the chat adapter) -> re-verify live -> execute -> assert, for one client run.

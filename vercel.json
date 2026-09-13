@@ -1,5 +1,9 @@
 {
   "framework": null,
   "functions": { "api/*.py": { "maxDuration": 60 } },
-  "rewrites": [ { "source": "/", "destination": "/index.html" } ]
+  "rewrites": [
+    { "source": "/", "destination": "/index.html" },
+    { "source": "/freelancer", "destination": "/freelancer.html" },
+    { "source": "/client", "destination": "/client.html" }
+  ]
 }

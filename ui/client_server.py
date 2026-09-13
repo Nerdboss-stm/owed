@@ -2,16 +2,17 @@
 their Approve) sends them the real chase email. Runs on THIS machine, never on Vercel.
 
   ~/.venvs/owed/bin/python ui/client_server.py            # http://localhost:8766
-  cloudflared tunnel --url http://localhost:8766          # public URL for the Rehearsal Room link
+  cloudflared tunnel --url http://localhost:8766          # public URL; put it in public/client.json
 
 POST /client/start   {email, slack_webhook?}  seed -> rehearse_for -> post plan -> {run_id, plan}
-POST /client/approve {email, run_id}          write the approval flag; execute_for runs in the background
-GET  /client/status?email=                    latest plan, trace, end state, posts, and the CLOSED line once paid
-GET  /                                        public/client.html
+POST /client/approve {email, run_id}          write approve.json for that email; execute_for runs in the background
+GET  /client/status?email=                    latest run, run history for its invoice, trace, end state, CLOSED line
+GET  /, /client                               public/client.html (the same page Vercel serves at /client)
 
 State: state/clients/<email>/{latest.json, meta/<run_id>.json, plans/, traces/, approve.json, posts.jsonl,
 sent.json, closed.json}. Credentials come from .env exactly as run.py --live. Every live write still goes
 through owed.agent.executor; the web Approve is the tap via owed.adapters.chat_webtap.WebTapChat.
+CORS is open because the Vercel page calls this backend cross-origin; it is a sandbox with no accounts.
 """
 from __future__ import annotations
 import json
@@ -27,12 +28,13 @@ from typing import Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from fastapi import FastAPI, HTTPException  # noqa: E402
+from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
 from fastapi.responses import FileResponse, JSONResponse  # noqa: E402
 from pydantic import BaseModel  # noqa: E402
 
 from owed.adapters.chat_webtap import WEBHOOK_PREFIX, WebTapChat  # noqa: E402
 from owed.config import ROOT, today as today_fn  # noqa: E402
-from owed.run import client_dir, execute_for, plan_summary, rehearse_for  # noqa: E402
+from owed.run import client_dir, execute_for, plan_summary, rehearse_for, send_receipt_for  # noqa: E402
 
 STATE_ROOT = ROOT / "state"
 PUBLIC = ROOT / "public"
@@ -44,6 +46,7 @@ _ledger = None
 _inbox = None
 
 app = FastAPI(title="OWED · Be the client")
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["GET", "POST"], allow_headers=["*"])
 
 
 # ---------- live adapters, built once ----------
@@ -111,8 +114,30 @@ def _trace_lines(d: Path, run_id: str) -> list[dict]:
     return [json.loads(line) for line in p.read_text().splitlines() if line.strip()]
 
 
+def _run_history(d: Path, invoice_id: Optional[str]) -> list[dict]:
+    """Every run for this invoice, oldest first: what the timeline is built from."""
+    out = []
+    for p in sorted((d / "meta").glob("*.json")) if (d / "meta").exists() else []:
+        m = _read(p) or {}
+        if invoice_id and (m.get("invoice") or {}).get("invoice_id") != invoice_id:
+            continue
+        trace = _trace_lines(d, m["run_id"])
+        plan = _read(d / "plans" / f"{m['run_id']}.json") or {}
+        state = next((t["data"].get("state") for t in trace if t["phase"] == "classify" and t.get("data")), None)
+        out.append({
+            "run_id": m["run_id"], "phase": m.get("phase"), "started_at": m.get("started_at"),
+            "approved_at": m.get("approved_at"), "summary": m.get("summary"), "thread_state": state,
+            "refusals": plan.get("refusals", []), "intents": len(plan.get("intents", [])),
+            "sent": any(t["phase"] == "execute" and t["decision"].startswith("SENT") for t in trace),
+            "aborted": any(t["phase"] == "abort" for t in trace),
+        })
+    out.sort(key=lambda r: r.get("started_at") or "")
+    return out
+
+
 def _closed_line(email: str, invoice_id: Optional[str], d: Path) -> Optional[dict]:
-    """'CLOSED INV-XXXX: $3,400.00 received' once the ledger shows the invoice paid. Checked every 10 s."""
+    """'CLOSED INV-XXXX: $3,400.00 received' once the ledger shows the invoice paid, or its payment link
+    has a completed checkout. Checked every 10 s."""
     if not invoice_id:
         return None
     persisted = _read(d / "closed.json")
@@ -142,6 +167,31 @@ def _closed_line(email: str, invoice_id: Optional[str], d: Path) -> Optional[dic
     return result
 
 
+# ---------- background work ----------
+
+def _execute_in_background(email: str, d: Path, run_id: str, meta: dict) -> None:
+    with RUN_LOCK:
+        try:
+            plan = execute_for(email, run_id, d, ledger=ledger(), inbox=inbox(), calendar=None,
+                               chat=_chat(d, run_id, meta.get("webhook_url")), plan_ts=meta.get("plan_ts", ""))
+            _set_meta(d, run_id, phase="executed", summary=plan_summary(plan),
+                      finished_at=datetime.now(timezone.utc).isoformat())
+        except Exception as e:  # noqa: BLE001 - surfaced in the panel; the trace already has the FAILED line
+            traceback.print_exc()
+            _set_meta(d, run_id, phase="failed", error=f"{type(e).__name__}: {str(e)[:300]}")
+
+
+def _receipt_in_background(email: str, d: Path, run_id: str, invoice_id: str, webhook: Optional[str]) -> None:
+    with RUN_LOCK:
+        try:
+            send_receipt_for(email, run_id, invoice_id, d, ledger=ledger(), inbox=inbox(),
+                             chat=_chat(d, run_id, webhook))
+            _set_meta(d, run_id, receipt_sent=True, receipt_at=datetime.now(timezone.utc).isoformat())
+        except Exception as e:  # noqa: BLE001
+            traceback.print_exc()
+            _set_meta(d, run_id, receipt_error=f"{type(e).__name__}: {str(e)[:300]}")
+
+
 # ---------- endpoints ----------
 
 class StartBody(BaseModel):
@@ -155,8 +205,14 @@ class ApproveBody(BaseModel):
 
 
 @app.get("/")
+@app.get("/client")
 def page():
     return FileResponse(PUBLIC / "client.html")
+
+
+@app.get("/owed.css")
+def stylesheet():
+    return FileResponse(PUBLIC / "owed.css", media_type="text/css")
 
 
 @app.post("/client/start")
@@ -189,18 +245,6 @@ def start(body: StartBody):
             "summary": meta["summary"], "plan": json.loads(plan.to_json())}
 
 
-def _execute_in_background(email: str, d: Path, run_id: str, meta: dict) -> None:
-    with RUN_LOCK:
-        try:
-            plan = execute_for(email, run_id, d, ledger=ledger(), inbox=inbox(), calendar=None,
-                               chat=_chat(d, run_id, meta.get("webhook_url")), plan_ts=meta.get("plan_ts", ""))
-            _set_meta(d, run_id, phase="executed", summary=plan_summary(plan),
-                      finished_at=datetime.now(timezone.utc).isoformat())
-        except Exception as e:  # noqa: BLE001 - surfaced in the panel; the trace already has the FAILED line
-            traceback.print_exc()
-            _set_meta(d, run_id, phase="failed", error=f"{type(e).__name__}: {str(e)[:300]}")
-
-
 @app.post("/client/approve")
 def approve(body: ApproveBody):
     """The tap. run_id must be one that /client/start returned for this same email: the meta file
@@ -231,16 +275,24 @@ def status(email: str):
     d = _dir(email)
     meta = _latest(d)
     if not meta:
-        return {"email": email, "phase": "none", "run_id": None}
+        return JSONResponse({"email": email, "phase": "none", "run_id": None, "runs": []},
+                            headers={"Cache-Control": "no-store"})
     run_id = meta["run_id"]
     plan = _read(d / "plans" / f"{run_id}.json") or {}
     invoice = meta.get("invoice") or {}
     closed = _closed_line(email, invoice.get("invoice_id"), d)
+    if closed and closed.get("line") and meta.get("phase") == "executed" \
+            and not meta.get("receipt_sent") and not meta.get("receipt_pending"):
+        meta = _set_meta(d, run_id, receipt_pending=True)
+        threading.Thread(target=_receipt_in_background,
+                         args=(email, d, run_id, invoice["invoice_id"], meta.get("webhook_url")), daemon=True).start()
     chat = _chat(d, run_id, None)
     return JSONResponse({
         "email": email, "run_id": run_id, "phase": meta.get("phase"), "error": meta.get("error"),
         "summary": meta.get("summary"), "invoice": invoice, "webhook": meta.get("webhook", False),
         "approved_at": meta.get("approved_at"), "started_at": meta.get("started_at"),
+        "receipt_sent": bool(meta.get("receipt_sent")), "receipt_error": meta.get("receipt_error"),
+        "runs": _run_history(d, invoice.get("invoice_id")),
         "plan": plan, "end_state": plan.get("end_state"), "trace": _trace_lines(d, run_id),
         "posts": chat.posts()[-6:], "closed": closed,
     }, headers={"Cache-Control": "no-store"})
