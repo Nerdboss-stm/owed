@@ -1,0 +1,61 @@
+{
+  "name": "10_verifier_discount",
+  "row": "verifier catches discount in draft",
+  "expected": "refused before tap",
+  "end_state": "Gmail 0 sent",
+  "today": "2026-09-13",
+  "invoices": [
+    {
+      "invoice_id": "INV-0042",
+      "client_email": "dana@northwind.test",
+      "client_name": "Dana Whitfield",
+      "amount_due": 3400.0,
+      "amount_total": 3400.0,
+      "due_date": "2026-09-01",
+      "paid": false,
+      "last_chased_step": 1,
+      "thread_id": "t-0042"
+    }
+  ],
+  "threads": {
+    "t-0042": [
+      {
+        "thread_id": "t-0042",
+        "from_addr": "freelancer@owed.test",
+        "to_addr": "dana@northwind.test",
+        "subject": "Invoice INV-0042",
+        "body": "Hi Dana,\n\nAttached is invoice INV-0042 for the site redesign, $3,400.00, due September 1.\n\nThanks,\n",
+        "ts": "2026-08-18T10:02:00"
+      },
+      {
+        "thread_id": "t-0042",
+        "from_addr": "freelancer@owed.test",
+        "to_addr": "dana@northwind.test",
+        "subject": "Re: Invoice INV-0042",
+        "body": "Hi Dana,\n\nA quick note that invoice INV-0042 for $3,400.00 was due on September 1. Could you let me know when it is scheduled?\n\nThanks,\n",
+        "ts": "2026-09-04T09:15:00"
+      }
+    ]
+  },
+  "free_slots": [],
+  "links": {
+    "INV-0042": []
+  },
+  "posts": [],
+  "tap": true,
+  "runs": 1,
+  "actor_draft": {
+    "INV-0042:2": {
+      "subject": "Re: Invoice INV-0042",
+      "body": "Hi Dana,\n\nInvoice INV-0042 for $3,400.00 is still open. If it helps get this closed out, I'm happy to offer a 10% discount if you can pay this week.\n\nThanks,\n"
+    }
+  },
+  "expect": {
+    "gmail_sent": 0,
+    "calendar_events": 0,
+    "refusal_reasons": [
+      "verifier_discount"
+    ],
+    "refused_before_tap": true
+  }
+}
