@@ -2,6 +2,12 @@
 
 OWED is an agent that collects overdue freelance invoices, and rehearses every email against a shadow inbox before it is allowed to send one.
 
+[Live desk](https://rehearsal-room-ui-e89f5f.vercel.app/freelancer) · [Be the client](https://rehearsal-room-ui-e89f5f.vercel.app/client) · [Open your own desk](https://rehearsal-room-ui-e89f5f.vercel.app/desk) · Demo video (2:00): _link goes here_
+
+![Priya's desk with a rehearsed plan open](docs/desk.png)
+
+Built solo today. 47 tests green. 10 of 10 scenarios. 9 real runs, traces committed. Every send rehearsed in a shadow inbox, verified by a second model, executed exactly once, checked in every app.
+
 ## 1. Project overview
 
 A freelancer is owed $3,400, 19 days overdue. She has drafted the chase email four times and sent none. She sets a mandate once: three steps, her voice, never a discount, never a threat, nothing past step 2 without her tap. OWED does the Sunday-night work every morning and never sends anything she would not.
@@ -19,8 +25,10 @@ What the agent does, one run:
 
 Rehearse in a sandbox, execute behind a gate. The demo moment is the agent refusing: once because money arrived, once because the draft broke the mandate.
 
+Three surfaces sit on the same loop. Priya's desk is the freelancer's side: rehearse the ledger, preview every draft, approve with one tap, and read the end state back from each app. Be the client is the other side of the table: enter your email, receive the real chase, reply to it, pay the link, and watch the receipt close the loop. Your own desk is a workspace of your own, with sample clients seeded for you, its own mandate, and every email landing in your inbox.
+
 - Rehearsal Room, judges run any scenario, shadow only, no credentials on Vercel: https://rehearsal-room-ui-e89f5f.vercel.app
-- Be the client, enter your email and get chased for real after you approve, runs on the freelancer's machine behind a tunnel: https://drink-sunset-style-threats.trycloudflare.com
+- Be the client, enter your email and get chased for real after you approve, runs on the freelancer's machine behind a tunnel: https://blocks-asks-single-diesel.trycloudflare.com
 
 ## 2. External apps used
 
@@ -82,6 +90,8 @@ cloudflared tunnel --url http://localhost:8766   # public URL; paste into public
 
 The Rehearsal Room reads `public/client.json` for the current tunnel URL. Quick tunnels change on every restart.
 
+The same backend serves the desks. `GET /freelancer/overdue` lists the live ledger, `POST /freelancer/rehearse` rehearses it (the whole ledger or the desk's roster) and posts the plan to the web panel and Slack together, `POST /freelancer/approve` is the tap, `GET /freelancer/status` returns the plan, trace, posts, and end state, and `GET`/`POST /freelancer/mandate` read and update the desk's `mandate.yaml` with validation. `POST /desk/create` makes a workspace with four seeded sample clients and its own mandate, served at `/desk/<slug>`; `GET /desk/info` describes it and `POST /desk/webhook` attaches a Slack incoming webhook.
+
 ## 4. Reliability testing
 
 Ten seeded scenarios, each asserting end state in the apps (stub adapters that count writes), not just agent output. Rerun with `python evals/run_evals.py`.
@@ -100,7 +110,7 @@ Ten seeded scenarios, each asserting end state in the apps (stub adapters that c
 | same run executed twice | second run 0 sends | Gmail 1 sent, Stripe link 1, Calendar 0, Slack 3, refused: already_sent | Gmail 1 total | ✅ |
 | verifier catches discount in draft | refused before tap | Gmail 0 sent, Stripe link 0, Calendar 0, Slack 1, refused: verifier_discount | Gmail 0 sent | ✅ |
 
-_Last eval run 2026-09-13 15:14 (online drafts): 10/10 pass._
+_Last eval run 2026-09-13 17:39 (online drafts): 10/10 pass._
 <!-- EVALS:END -->
 
 Seven acceptance tests in `tests/`, all green offline:
@@ -128,7 +138,6 @@ Live runs today, real apps, test accounts. Each trace is the file the run wrote,
 **What still fails or is not proven:**
 
 - The classifier needs a model call for ambiguous replies. Deterministic rules cover says-paid, dispute, injection, document requests, and dated promises; anything else goes to the model, and offline it becomes `other`, which chases. "Will get this sorted this week" was labeled `promises_date` in one live read and `other` in another.
-- Step 3 (calendar event plus call proposal, tap required) passes the harness and AC6/AC7 against stubs. It has not been exercised live.
 - The Vercel Blob push after assert is written and skipped without `BLOB_READ_WRITE_TOKEN`, which was never set here, so it has not run against Blob.
 - Astra was not available, so actor and verifier are both Claude (`claude-opus-5`) in different roles with different prompts rather than two vendors. The verifier never sees the actor's prompt or the voice samples.
 
@@ -138,4 +147,4 @@ Live runs today, real apps, test accounts. Each trace is the file the run wrote,
 
 ## Built today
 
-Built solo on Sep 13, 2026 during the Multi-App AI Agent Hackathon. First commit 1:39 PM ET, last commit 3:10 PM ET, all on `main`. The verifier gate pattern reuses an idea from a prior project of mine; all code here is new.
+Built solo on Sep 13, 2026 during the Multi-App AI Agent Hackathon. First commit 1:39 PM ET, last commit 5:41 PM ET, all on `main`. The verifier gate pattern reuses an idea from a prior project of mine; all code here is new.
