@@ -34,7 +34,9 @@ def snapshot(ledger: Ledger, inbox: Inbox, calendar: Optional[Calendar], today: 
     threads: dict[str, list[Message]] = {}
     for inv in invoices:
         if not inv.thread_id and hasattr(inbox, "latest_thread_id"):
-            inv.thread_id = inbox.latest_thread_id(f"from:{inv.client_email}")  # type: ignore[attr-defined]
+            # Prefer the thread that names this invoice; else the client's latest thread.
+            find = inbox.latest_thread_id  # type: ignore[attr-defined]
+            inv.thread_id = find(f"from:{inv.client_email} {inv.invoice_id}") or find(f"from:{inv.client_email}")
         if inv.thread_id and inv.thread_id not in threads:
             threads[inv.thread_id] = inbox.thread(inv.thread_id)
     free = calendar.free_slots(today, n_slots) if calendar else []

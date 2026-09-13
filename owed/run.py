@@ -10,6 +10,7 @@ Rehearsal never writes live: every write in the loop below hits a Shadow adapter
 Only owed.agent.executor turns Intents into live writes, and only after the Slack tap (PLAN 3:45).
 """
 from __future__ import annotations
+import json
 import os
 from dataclasses import replace
 from datetime import date, datetime, timezone
@@ -142,11 +143,27 @@ def rehearse(world: ShadowWorld, mandate: dict, drafter: Optional[Drafter], run_
     return plan
 
 
-def _write_plan(state_dir: Path, plan: Plan) -> Path:
+def _write_plan(state_dir: Path, plan: Plan, end_state: Optional[list] = None) -> Path:
     p = state_dir / "plans" / f"{plan.run_id}.json"
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(plan.to_json())
+    if end_state is None:
+        p.write_text(plan.to_json())
+    else:
+        data = json.loads(plan.to_json())
+        data["end_state"] = [{"app": s.app, "expected": s.expected, "actual": s.actual, "detail": s.detail, "ok": s.ok}
+                             for s in end_state]
+        p.write_text(json.dumps(data, indent=2, default=str))
     return p
+
+
+def _push_blob(trace: Tracer, run_id: str, state_dir: Path, traces_dir: Path) -> None:
+    """DEPLOY step 4: one upload after assert. Skipped without a token; a failure is traced, never raised."""
+    from owed.blob import push_last_run
+    result = push_last_run(run_id, state_dir / "plans" / f"{run_id}.json", traces_dir / f"{run_id}.jsonl")
+    if result == "ok":
+        trace("done", None, f"pushed plan + trace to Vercel Blob under last_run/{run_id}")
+    elif result is not None:
+        trace("done", None, f"Blob push failed (run unaffected): {result}")
 
 
 def plan_summary(plan: Plan) -> str:
@@ -243,6 +260,8 @@ def run(*, ledger: Ledger, inbox: Inbox, calendar: Optional[Calendar], chat: Cha
         trace("done", None, "nothing to execute; refusals reported to the freelancer")
         states = asserter.assert_end_state(plan, ledger, inbox, calendar, chat)
         trace("assert", None, "end state ok: " + ", ".join(f"{s.app} {s.actual}/{s.expected}" for s in states))
+        _write_plan(state_dir, plan, states)
+        _push_blob(trace, run_id, state_dir, traces_dir)
         return plan
     timeout = int(os.environ.get("OWED_TAP_TIMEOUT", "600"))
     tapped = chat.wait_for_tap(ts, timeout_s=timeout)
@@ -301,6 +320,8 @@ def run(*, ledger: Ledger, inbox: Inbox, calendar: Optional[Calendar], chat: Cha
     trace("assert", None, "end state ok: " + ", ".join(f"{s.app} {s.actual}/{s.expected}" for s in states),
           states=[{"app": s.app, "expected": s.expected, "actual": s.actual} for s in states])
     trace("done", None, f"sent {sent}, aborted {len(aborts)}, refused {len(plan.refusals) - len(aborts)}")
+    _write_plan(state_dir, plan, states)
+    _push_blob(trace, run_id, state_dir, traces_dir)
     return plan
 
 

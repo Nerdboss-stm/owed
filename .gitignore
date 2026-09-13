@@ -6,6 +6,7 @@ credentials.json
 .DS_Store
 state/*
 !state/rehearsals/
-traces/
+traces/*
+!traces/live-clean-2.jsonl
 .claude/worktrees/
 .claude/settings.local.json

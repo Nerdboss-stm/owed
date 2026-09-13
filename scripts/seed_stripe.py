@@ -40,7 +40,9 @@ def main() -> None:
         stripe.Invoice.modify(inv.id, metadata={"invoice_id": stale_id})
         print(f"retagged stale {inv.id} status={inv.status} as {stale_id}")
 
-    cust = stripe.Customer.create(name=a.client_name, email=client_email)
+    existing = stripe.Customer.list(email=client_email, limit=1).data
+    cust = existing[0] if existing else stripe.Customer.create(name=a.client_name, email=client_email)
+    print(f"customer: {cust.id} ({'reused' if existing else 'created'}) {cust.name} <{cust.email}>")
     due = today() - timedelta(days=a.days_overdue)
     inv = stripe.Invoice.create(
         customer=cust.id,
