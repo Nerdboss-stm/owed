@@ -425,18 +425,27 @@ def _live_adapters(with_chat: bool) -> tuple:
     return StripeLedger(), GmailInbox(), GoogleCalendar(), chat
 
 
-def rehearse_for(email: str, state_dir: Path, *, ledger: Optional[Ledger] = None, inbox: Optional[Inbox] = None,
-                 calendar: Optional[Calendar] = None, today: Optional[date] = None, chat: Optional[Chat] = None,
-                 run_id: Optional[str] = None, drafter: Optional[Drafter] = None,
+def _as_chat(chat) -> Optional[Chat]:
+    """A Chat, or a list of Chats fanned out so one plan post and one approval reach all of them."""
+    if isinstance(chat, (list, tuple)):
+        from owed.adapters.chat_fanout import FanoutChat
+        return FanoutChat(list(chat))
+    return chat
+
+
+def rehearse_for(email: Optional[str], state_dir: Path, *, ledger: Optional[Ledger] = None,
+                 inbox: Optional[Inbox] = None, calendar: Optional[Calendar] = None, today: Optional[date] = None,
+                 chat=None, run_id: Optional[str] = None, drafter: Optional[Drafter] = None,
                  mandate: Optional[dict] = None) -> tuple[Plan, str]:
-    """Snapshot the apps, keep only this client's invoices, rehearse against Shadow. Reads only unless a
-    chat is given, in which case the plan is posted through the executor and its ts returned.
-    Adapters default to the live ones (needs credentials; never call from api/). Writes
-    <state_dir>/plans/<run_id>.json, <state_dir>/traces/<run_id>.jsonl and <state_dir>/latest.json."""
+    """Snapshot the apps, keep only this client's invoices (email=None keeps the whole ledger), rehearse
+    against Shadow. Reads only unless a chat (or list of chats) is given, in which case the plan is posted
+    through the executor and its ts returned. Adapters default to the live ones (needs credentials; never
+    call from api/). Writes <state_dir>/plans/<run_id>.json, <state_dir>/traces/<run_id>.jsonl, latest.json."""
     from owed.config import today as today_fn
-    email = email.strip().lower()
+    email = email.strip().lower() if email else None
+    chat = _as_chat(chat)
     state_dir = Path(state_dir)
-    run_id = run_id or f"client-{client_key(email)}-{datetime.now().strftime('%H%M%S')}"
+    run_id = run_id or f"client-{client_key(email) if email else 'ALL'}-{datetime.now().strftime('%H%M%S')}"
     if ledger is None or inbox is None:
         live_ledger, live_inbox, live_calendar, _ = _live_adapters(with_chat=False)
         ledger, inbox = ledger or live_ledger, inbox or live_inbox
@@ -445,8 +454,8 @@ def rehearse_for(email: str, state_dir: Path, *, ledger: Optional[Ledger] = None
     trace = Tracer(run_id, state_dir / "traces" / f"{run_id}.jsonl")
 
     snap = snapshot(ledger, inbox, calendar, today)
-    mine = [i for i in snap["invoices"] if (i.get("client_email") or "").lower() == email]
-    trace("read_ledger", None, f"{len(snap['invoices'])} overdue invoice(s) in the ledger, {len(mine)} for {email}",
+    mine = [i for i in snap["invoices"] if email is None or (i.get("client_email") or "").lower() == email]
+    trace("read_ledger", None, f"{len(snap['invoices'])} overdue invoice(s) in the ledger, {len(mine)} for {email or 'all clients'}",
           invoices=[i["invoice_id"] for i in mine])
     snap["invoices"] = mine
     snap["threads"] = {t: m for t, m in snap["threads"].items() if any(i.get("thread_id") == t for i in mine)}
@@ -503,27 +512,31 @@ def send_receipt_for(email: str, run_id: str, invoice_id: str, state_dir: Path, 
     return lines
 
 
-def execute_for(email: str, run_id: str, state_dir: Path, *, ledger: Optional[Ledger] = None,
-                inbox: Optional[Inbox] = None, calendar: Optional[Calendar] = None, chat: Optional[Chat] = None,
+def execute_for(email: Optional[str], run_id: str, state_dir: Path, *, ledger: Optional[Ledger] = None,
+                inbox: Optional[Inbox] = None, calendar: Optional[Calendar] = None, chat=None,
                 plan_ts: str = "") -> Plan:
-    """The tap -> re-verify live -> execute -> assert half, for one client's rehearsed plan. The tap cannot
-    be skipped: with plan_ts the plan was already posted (rehearse_for with a chat); without it the plan is
-    posted here first. chat is the tap channel: WebTapChat for the web Approve, default the freelancer's
-    Slack. Adapters default to the live ones. Refuses a plan whose intents belong to another client."""
-    email = email.strip().lower()
+    """The tap -> re-verify live -> execute -> assert half, for a rehearsed plan. The tap cannot be
+    skipped: with plan_ts the plan was already posted (rehearse_for with a chat); without it the plan is
+    posted here first. chat is the tap channel: a WebTapChat for the web Approve, the freelancer's Slack
+    (the default), or a list of both, in which case the plan posts to each and either one's approval
+    counts. Adapters default to the live ones. With an email, a plan holding another client's invoice
+    is refused; email=None means the whole-ledger plan from rehearse_for(None)."""
+    email = email.strip().lower() if email else None
+    chat = _as_chat(chat)
     state_dir = Path(state_dir)
     plan_path = state_dir / "plans" / f"{run_id}.json"
     if not plan_path.exists():
-        raise FileNotFoundError(f"no plan {run_id} for {email}; call rehearse_for first")
+        raise FileNotFoundError(f"no plan {run_id} for {email or 'all clients'}; call rehearse_for first")
     plan = plan_from_json(json.loads(plan_path.read_text()))
     if ledger is None or inbox is None or chat is None:
         live_ledger, live_inbox, live_calendar, live_chat = _live_adapters(with_chat=chat is None)
         ledger, inbox = ledger or live_ledger, inbox or live_inbox
         calendar, chat = calendar or live_calendar, chat or live_chat
-    for iid in {i.invoice_id for i in plan.intents}:
-        owner = ledger.get(iid).client_email.lower()
-        if owner != email:
-            raise ValueError(f"plan {run_id} has an intent for {iid}, whose client is {owner}, not {email}")
+    if email:
+        for iid in {i.invoice_id for i in plan.intents}:
+            owner = ledger.get(iid).client_email.lower()
+            if owner != email:
+                raise ValueError(f"plan {run_id} has an intent for {iid}, whose client is {owner}, not {email}")
     trace = Tracer(run_id, state_dir / "traces" / f"{run_id}.jsonl", append=True)
     if not plan_ts:
         from owed.agent import executor  # the only live-write path
