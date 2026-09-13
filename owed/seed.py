@@ -32,16 +32,21 @@ def _name_from_email(email: str) -> str:
 
 
 def _row(iid: str, inv, email: str, created: bool, days_overdue: int, name: Optional[str] = None) -> dict:
+    meta = _meta(inv.metadata)
     return {"invoice_id": iid, "stripe_id": inv.id, "created": created, "client_email": email,
             "client_name": name, "status": inv.status, "amount_due": inv.amount_remaining / 100,
-            "amount_total": inv.total / 100, "due_date": _meta(inv.metadata).get("due_date"),
-            "days_overdue": days_overdue, "last_chased_step": int(_meta(inv.metadata).get("last_chased_step", 0))}
+            "amount_total": inv.total / 100, "due_date": meta.get("due_date"),
+            "days_overdue": days_overdue, "last_chased_step": int(meta.get("last_chased_step", 0)),
+            "signoff": meta.get("signoff")}
 
 
 def seed_invoice(client_email: str, *, client_name: Optional[str] = None, invoice_id: Optional[str] = None,
                  amount: float = DEFAULT_AMOUNT, days_overdue: int = DEFAULT_DAYS_OVERDUE,
                  description: Optional[str] = None, last_chased_step: int = 0, paid: bool = False,
-                 partial: float = 0.0) -> dict:
+                 partial: float = 0.0, signoff: Optional[str] = None) -> dict:
+    """client_name names the Stripe customer (used for a new customer; an existing one keeps its name).
+    signoff, when given, is recorded in the invoice metadata for the workspace's mandate to pick up;
+    the drafter signs with the mandate's signoff, which each workspace sets in its own mandate.yaml."""
     stripe.api_key = env("STRIPE_TEST_KEY")
     email = client_email.strip().lower()
     base_id = invoice_id or f"INV-{client_key(email)}"
@@ -72,6 +77,8 @@ def seed_invoice(client_email: str, *, client_name: Optional[str] = None, invoic
     meta = {"invoice_id": new_id, "due_date": due.isoformat(), "last_chased_step": str(last_chased_step)}
     if last_chased_step:
         meta["last_chased_at"] = datetime.now(timezone.utc).isoformat()
+    if signoff:
+        meta["signoff"] = signoff.strip()[:120]
     inv = stripe.Invoice.create(
         customer=cust.id,
         collection_method="send_invoice",

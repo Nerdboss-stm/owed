@@ -64,12 +64,26 @@ class Tracer:
 
 # ---------- mandate ----------
 
-def load_mandate(overrides: Optional[dict] = None) -> dict:
-    mandate = yaml.safe_load(MANDATE_PATH.read_text())
+def load_mandate(overrides: Optional[dict] = None, path: Optional[Path] = None) -> dict:
+    """The mandate from disk, read every call so an update lands on the next run. path: a workspace's
+    own mandate.yaml; default owed/mandate/mandate.yaml."""
+    path = Path(path or MANDATE_PATH)
+    mandate = yaml.safe_load(path.read_text())
     if not isinstance(mandate, dict):
-        raise ValueError(f"{MANDATE_PATH} must contain a mapping")
+        raise ValueError(f"{path} must contain a mapping")
     mandate.update(overrides or {})
     return mandate
+
+
+def _emails(scope) -> Optional[set[str]]:
+    """None -> whole ledger; a str or list of str -> that set of client mailboxes, lowercased."""
+    if scope is None:
+        return None
+    items = [scope] if isinstance(scope, str) else list(scope)
+    out = {e.strip().lower() for e in items if e and e.strip()}
+    if not out:
+        raise ValueError("scope must be None, an email, or a non-empty list of emails")
+    return out
 
 
 def _actor() -> Drafter:
@@ -212,7 +226,8 @@ def plan_summary(plan: Plan) -> str:
 
 def rehearse_shadow(scenario: dict, *, drafter: Optional[Drafter] = None, mandate: Optional[dict] = None,
                     run_id: Optional[str] = None, traces_dir: Optional[Path] = None,
-                    state_dir: Optional[Path] = None, offline: bool = False) -> Plan:
+                    state_dir: Optional[Path] = None, offline: bool = False,
+                    mandate_path: Optional[Path] = None) -> Plan:
     """Scenario/snapshot dict -> Plan. Honors the scenario's `actor_draft` and `mandate` overrides.
     offline=True: no model call anywhere (template draft, deterministic classifier and verifier)."""
     if offline:
@@ -222,7 +237,7 @@ def rehearse_shadow(scenario: dict, *, drafter: Optional[Drafter] = None, mandat
         drafter = drafter or template_draft
     run_id = run_id or f"rehearsal-{scenario.get('name', 'snapshot')}-{datetime.now().strftime('%H%M%S')}"
     world = ShadowWorld.from_snapshot(scenario)
-    mandate = mandate or load_mandate(scenario.get("mandate"))
+    mandate = mandate or load_mandate(scenario.get("mandate"), path=mandate_path)
     overrides: dict = scenario.get("actor_draft") or {}
     inner = drafter
     if overrides:
@@ -433,19 +448,21 @@ def _as_chat(chat) -> Optional[Chat]:
     return chat
 
 
-def rehearse_for(email: Optional[str], state_dir: Path, *, ledger: Optional[Ledger] = None,
+def rehearse_for(email, state_dir: Path, *, ledger: Optional[Ledger] = None,
                  inbox: Optional[Inbox] = None, calendar: Optional[Calendar] = None, today: Optional[date] = None,
                  chat=None, run_id: Optional[str] = None, drafter: Optional[Drafter] = None,
-                 mandate: Optional[dict] = None) -> tuple[Plan, str]:
-    """Snapshot the apps, keep only this client's invoices (email=None keeps the whole ledger), rehearse
-    against Shadow. Reads only unless a chat (or list of chats) is given, in which case the plan is posted
-    through the executor and its ts returned. Adapters default to the live ones (needs credentials; never
-    call from api/). Writes <state_dir>/plans/<run_id>.json, <state_dir>/traces/<run_id>.jsonl, latest.json."""
+                 mandate: Optional[dict] = None, mandate_path: Optional[Path] = None) -> tuple[Plan, str]:
+    """Snapshot the apps, keep only the scoped clients' invoices (email: one address, a list of addresses,
+    or None for the whole ledger), rehearse against Shadow. Reads only unless a chat (or list of chats) is
+    given, in which case the plan is posted through the executor and its ts returned. state_dir is the
+    workspace: plans/, traces/, latest.json and sent.json live under it. mandate_path picks that
+    workspace's mandate.yaml. Adapters default to the live ones (needs credentials; never call from api/)."""
     from owed.config import today as today_fn
-    email = email.strip().lower() if email else None
+    emails = _emails(email)
     chat = _as_chat(chat)
     state_dir = Path(state_dir)
-    run_id = run_id or f"client-{client_key(email) if email else 'ALL'}-{datetime.now().strftime('%H%M%S')}"
+    label = "ALL" if emails is None else (client_key(next(iter(emails))) if len(emails) == 1 else f"MULTI{len(emails)}")
+    run_id = run_id or f"client-{label}-{datetime.now().strftime('%H%M%S')}"
     if ledger is None or inbox is None:
         live_ledger, live_inbox, live_calendar, _ = _live_adapters(with_chat=False)
         ledger, inbox = ledger or live_ledger, inbox or live_inbox
@@ -454,19 +471,21 @@ def rehearse_for(email: Optional[str], state_dir: Path, *, ledger: Optional[Ledg
     trace = Tracer(run_id, state_dir / "traces" / f"{run_id}.jsonl")
 
     snap = snapshot(ledger, inbox, calendar, today)
-    mine = [i for i in snap["invoices"] if email is None or (i.get("client_email") or "").lower() == email]
-    trace("read_ledger", None, f"{len(snap['invoices'])} overdue invoice(s) in the ledger, {len(mine)} for {email or 'all clients'}",
+    mine = [i for i in snap["invoices"] if emails is None or (i.get("client_email") or "").lower() in emails]
+    who = "all clients" if emails is None else ", ".join(sorted(emails))
+    trace("read_ledger", None, f"{len(snap['invoices'])} overdue invoice(s) in the ledger, {len(mine)} for {who}",
           invoices=[i["invoice_id"] for i in mine])
     snap["invoices"] = mine
     snap["threads"] = {t: m for t, m in snap["threads"].items() if any(i.get("thread_id") == t for i in mine)}
     snap["links"] = {i["invoice_id"]: [] for i in mine}
 
     world = ShadowWorld.from_snapshot(snap)
-    plan = rehearse(world, mandate or load_mandate(), drafter, run_id, trace)
+    plan = rehearse(world, mandate or load_mandate(path=mandate_path), drafter, run_id, trace)
     _write_plan(state_dir, plan)
     trace("rehearsal_done", None, plan_summary(plan),
           intents=[i.idempotency_key for i in plan.intents], refusals=[r.reason for r in plan.refusals])
-    (state_dir / "latest.json").write_text(json.dumps({"run_id": run_id, "email": email}))
+    (state_dir / "latest.json").write_text(json.dumps({"run_id": run_id, "email": email if isinstance(email, str) else
+                                                       (sorted(emails) if emails else None)}))
 
     ts = ""
     if chat is not None:
@@ -477,7 +496,7 @@ def rehearse_for(email: Optional[str], state_dir: Path, *, ledger: Optional[Ledg
 
 
 def send_receipt_for(email: str, run_id: str, invoice_id: str, state_dir: Path, *, ledger: Ledger, inbox: Inbox,
-                     chat: Chat, mandate: Optional[dict] = None) -> list[TraceLine]:
+                     chat: Chat, mandate: Optional[dict] = None, mandate_path: Optional[Path] = None) -> list[TraceLine]:
     """Be the client, last step: the invoice is paid, so send one receipt in the chase thread and post the
     CLOSED line. The same receipt_draft/receipt_checks as the core loop, no model; idempotent on key
     <invoice_id>:receipt through the executor, so a run.py receipt and a panel receipt never both send."""
@@ -489,7 +508,7 @@ def send_receipt_for(email: str, run_id: str, invoice_id: str, state_dir: Path, 
     inv = ledger.get(invoice_id)
     if not inv.paid:
         raise ValueError(f"{invoice_id} does not read paid in the ledger; no receipt")
-    mandate = mandate or load_mandate()
+    mandate = mandate or load_mandate(path=mandate_path)
     draft = receipt_draft(inv, mandate)
     refusals = receipt_checks(draft, inv, mandate)
     if refusals:
@@ -512,7 +531,7 @@ def send_receipt_for(email: str, run_id: str, invoice_id: str, state_dir: Path, 
     return lines
 
 
-def execute_for(email: Optional[str], run_id: str, state_dir: Path, *, ledger: Optional[Ledger] = None,
+def execute_for(email, run_id: str, state_dir: Path, *, ledger: Optional[Ledger] = None,
                 inbox: Optional[Inbox] = None, calendar: Optional[Calendar] = None, chat=None,
                 plan_ts: str = "") -> Plan:
     """The tap -> re-verify live -> execute -> assert half, for a rehearsed plan. The tap cannot be
@@ -521,22 +540,22 @@ def execute_for(email: Optional[str], run_id: str, state_dir: Path, *, ledger: O
     (the default), or a list of both, in which case the plan posts to each and either one's approval
     counts. Adapters default to the live ones. With an email, a plan holding another client's invoice
     is refused; email=None means the whole-ledger plan from rehearse_for(None)."""
-    email = email.strip().lower() if email else None
+    emails = _emails(email)
     chat = _as_chat(chat)
     state_dir = Path(state_dir)
     plan_path = state_dir / "plans" / f"{run_id}.json"
     if not plan_path.exists():
-        raise FileNotFoundError(f"no plan {run_id} for {email or 'all clients'}; call rehearse_for first")
+        raise FileNotFoundError(f"no plan {run_id} in {state_dir}; call rehearse_for first")
     plan = plan_from_json(json.loads(plan_path.read_text()))
     if ledger is None or inbox is None or chat is None:
         live_ledger, live_inbox, live_calendar, live_chat = _live_adapters(with_chat=chat is None)
         ledger, inbox = ledger or live_ledger, inbox or live_inbox
         calendar, chat = calendar or live_calendar, chat or live_chat
-    if email:
+    if emails is not None:
         for iid in {i.invoice_id for i in plan.intents}:
             owner = ledger.get(iid).client_email.lower()
-            if owner != email:
-                raise ValueError(f"plan {run_id} has an intent for {iid}, whose client is {owner}, not {email}")
+            if owner not in emails:
+                raise ValueError(f"plan {run_id} has an intent for {iid}, whose client is {owner}, outside {sorted(emails)}")
     trace = Tracer(run_id, state_dir / "traces" / f"{run_id}.jsonl", append=True)
     if not plan_ts:
         from owed.agent import executor  # the only live-write path
