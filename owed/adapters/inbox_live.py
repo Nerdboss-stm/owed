@@ -1,6 +1,7 @@
 """Gmail: client thread in, chase email out."""
 from __future__ import annotations
 import base64
+import re
 from datetime import datetime, timezone
 from email.message import EmailMessage
 from typing import Optional
@@ -59,9 +60,19 @@ class GmailInbox(Inbox):
         return msgs[0]["threadId"] if msgs else None
 
     def count_sent(self, to: str, subject_contains: str) -> int:
+        """Gmail's subject search splits on hyphens, so subject:"INV-0206" also matches INV-0206-stale-xxxx
+        (a retagged twin after a ledger reset). Candidates come from the search; the count is exact on the
+        real Subject header, the needle as a whole token."""
         q = f'in:sent to:{to} subject:"{subject_contains}"'
         r = retry_read(lambda: self._svc.users().messages().list(userId="me", q=q, maxResults=100).execute())
-        return len(r.get("messages", []))
+        needle = re.compile(rf"(?<![\w-]){re.escape(subject_contains)}(?![\w-])", re.IGNORECASE)
+        n = 0
+        for m in r.get("messages", []):
+            meta = retry_read(lambda: self._svc.users().messages().get(
+                userId="me", id=m["id"], format="metadata", metadataHeaders=["Subject"]).execute())
+            if needle.search(_header(meta, "Subject")):
+                n += 1
+        return n
 
     # ---- write (only executor.py may call this) ----
     def send(self, to: str, subject: str, body: str, thread_id: Optional[str]) -> str:
