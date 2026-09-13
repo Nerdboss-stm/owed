@@ -5,13 +5,18 @@ Entry points:
                            and state/plans/<run_id>.json
   rehearse_shadow(dict)    scenario/snapshot dict -> Plan; Shadow adapters only, no network, no files
                            unless traces_dir is given. This is what api/rehearse.py calls on Vercel.
+  rehearse_for(email, ..)  Be the client: live snapshot filtered to one client's invoices, shadow rehearsal,
+                           state under state/clients/<email>/. ui/client_server.py calls this.
+  execute_for(email, ..)   the tap -> re-verify -> execute -> assert half of the same flow.
 
 Rehearsal never writes live: every write in the loop below hits a Shadow adapter and becomes an Intent.
 Only owed.agent.executor turns Intents into live writes, and only after the Slack tap (PLAN 3:45).
 """
 from __future__ import annotations
+import hashlib
 import json
 import os
+import re
 from dataclasses import replace
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -35,12 +40,13 @@ MANDATE_PATH = ROOT / "owed" / "mandate" / "mandate.yaml"
 class Tracer:
     """Appends one TraceLine per step to traces/<run_id>.jsonl and echoes the decision. The log is the demo."""
 
-    def __init__(self, run_id: str, path: Optional[Path] = None, echo: bool = True):
+    def __init__(self, run_id: str, path: Optional[Path] = None, echo: bool = True, append: bool = False):
         self.run_id, self.path, self.echo = run_id, path, echo
         self.lines: list[TraceLine] = []
         if path:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("")
+            if not append:
+                path.write_text("")
 
     def __call__(self, phase: str, invoice_id: Optional[str], decision: str, **data: Any) -> TraceLine:
         return self.write(TraceLine(ts=datetime.now(timezone.utc).isoformat(), run_id=self.run_id, phase=phase,  # type: ignore[arg-type]
@@ -251,20 +257,32 @@ def run(*, ledger: Ledger, inbox: Inbox, calendar: Optional[Calendar], chat: Cha
     if rehearse_only:
         return plan
 
-    from owed.agent import asserter, executor  # the only live-write path
+    from owed.agent import executor  # the only live-write path
 
     # 6. Post the plan to Slack and wait for the tap.
     ts = executor.post(chat, slack_plan_text(plan))
     trace("posted_plan", None, f"posted plan to Slack ({ts}): {plan_summary(plan)}", ts=ts)
+    return gate_and_execute(plan, ts, ledger=ledger, inbox=inbox, calendar=calendar, chat=chat,
+                            state_dir=state_dir, traces_dir=traces_dir, trace=trace, run_id=run_id, push_blob=True)
+
+
+def gate_and_execute(plan: Plan, plan_ts: str, *, ledger: Ledger, inbox: Inbox, calendar: Optional[Calendar],
+                     chat: Chat, state_dir: Path, traces_dir: Path, trace: Tracer, run_id: str,
+                     push_blob: bool = False) -> Plan:
+    """Steps 6b-10 after the plan is posted: wait for the tap, re-verify live, execute, assert.
+    Shared by run() (Slack tap) and execute_for() (web tap). Every live write goes through executor."""
+    from owed.agent import asserter, executor  # the only live-write path
+
     if not plan.intents:
         trace("done", None, "nothing to execute; refusals reported to the freelancer")
         states = asserter.assert_end_state(plan, ledger, inbox, calendar, chat)
         trace("assert", None, "end state ok: " + ", ".join(f"{s.app} {s.actual}/{s.expected}" for s in states))
         _write_plan(state_dir, plan, states)
-        _push_blob(trace, run_id, state_dir, traces_dir)
+        if push_blob:
+            _push_blob(trace, run_id, state_dir, traces_dir)
         return plan
     timeout = int(os.environ.get("OWED_TAP_TIMEOUT", "600"))
-    tapped = chat.wait_for_tap(ts, timeout_s=timeout)
+    tapped = chat.wait_for_tap(plan_ts, timeout_s=timeout)
     trace("tap", None, "tap received: freelancer approved the plan" if tapped else f"no tap within {timeout}s: nothing sends",
           tapped=tapped)
     if not tapped:
@@ -321,8 +339,90 @@ def run(*, ledger: Ledger, inbox: Inbox, calendar: Optional[Calendar], chat: Cha
           states=[{"app": s.app, "expected": s.expected, "actual": s.actual} for s in states])
     trace("done", None, f"sent {sent}, aborted {len(aborts)}, refused {len(plan.refusals) - len(aborts)}")
     _write_plan(state_dir, plan, states)
-    _push_blob(trace, run_id, state_dir, traces_dir)
+    if push_blob:
+        _push_blob(trace, run_id, state_dir, traces_dir)
     return plan
+
+
+# ---------- Be the client: one invoice per email, web tap instead of Slack reaction ----------
+
+EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
+
+
+def client_key(email: str) -> str:
+    return hashlib.sha1(email.strip().lower().encode("utf-8")).hexdigest()[:4].upper()
+
+
+def client_dir(email: str, state_root: Path) -> Path:
+    """state/clients/<email>. The email is validated so it is one safe path segment."""
+    email = email.strip().lower()
+    if not EMAIL_RE.match(email) or ".." in email:
+        raise ValueError(f"not an email address: {email!r}")
+    return Path(state_root) / "clients" / email
+
+
+def plan_from_json(d: dict) -> Plan:
+    """Rebuild a contract Plan from state/plans/<run_id>.json."""
+    from owed.contract import Intent
+    intents = [Intent(kind=i["kind"], invoice_id=i["invoice_id"], step=i["step"], payload=i.get("payload", {}),
+                      idempotency_key=i.get("idempotency_key", ""), requires_tap=bool(i.get("requires_tap", False)))
+               for i in d.get("intents", [])]
+    refusals = [Refusal(invoice_id=r["invoice_id"], step=r["step"], reason=r["reason"], detail=r.get("detail", ""))
+                for r in d.get("refusals", [])]
+    raw = d.get("created_at")
+    try:
+        created = datetime.fromisoformat(str(raw)) if raw else datetime.now(timezone.utc)
+    except ValueError:
+        created = datetime.now(timezone.utc)
+    return Plan(run_id=d["run_id"], created_at=created, intents=intents, refusals=refusals)
+
+
+def rehearse_for(email: str, state_dir: Path, *, ledger: Ledger, inbox: Inbox, calendar: Optional[Calendar],
+                 today: date, chat: Optional[Chat] = None, run_id: Optional[str] = None,
+                 drafter: Optional[Drafter] = None, mandate: Optional[dict] = None) -> tuple[Plan, str]:
+    """Snapshot the live apps, keep only this client's invoices, rehearse against Shadow.
+    Writes <state_dir>/plans/<run_id>.json, <state_dir>/traces/<run_id>.jsonl and <state_dir>/latest.json.
+    With a chat, posts the plan through the executor and returns its ts (the web tap ignores it)."""
+    email = email.strip().lower()
+    state_dir = Path(state_dir)
+    run_id = run_id or f"client-{client_key(email)}-{datetime.now().strftime('%H%M%S')}"
+    trace = Tracer(run_id, state_dir / "traces" / f"{run_id}.jsonl")
+
+    snap = snapshot(ledger, inbox, calendar, today)
+    mine = [i for i in snap["invoices"] if (i.get("client_email") or "").lower() == email]
+    trace("read_ledger", None, f"{len(snap['invoices'])} overdue invoice(s) in the ledger, {len(mine)} for {email}",
+          invoices=[i["invoice_id"] for i in mine])
+    snap["invoices"] = mine
+    snap["threads"] = {t: m for t, m in snap["threads"].items() if any(i.get("thread_id") == t for i in mine)}
+    snap["links"] = {i["invoice_id"]: [] for i in mine}
+
+    world = ShadowWorld.from_snapshot(snap)
+    plan = rehearse(world, mandate or load_mandate(), drafter, run_id, trace)
+    _write_plan(state_dir, plan)
+    trace("rehearsal_done", None, plan_summary(plan),
+          intents=[i.idempotency_key for i in plan.intents], refusals=[r.reason for r in plan.refusals])
+    (state_dir / "latest.json").write_text(json.dumps({"run_id": run_id, "email": email}))
+
+    ts = ""
+    if chat is not None:
+        from owed.agent import executor  # the only live-write path
+        ts = executor.post(chat, slack_plan_text(plan))
+        trace("posted_plan", None, f"posted plan ({ts}): {plan_summary(plan)}", ts=ts)
+    return plan, ts
+
+
+def execute_for(email: str, run_id: str, state_dir: Path, *, ledger: Ledger, inbox: Inbox,
+                calendar: Optional[Calendar], chat: Chat, plan_ts: str = "") -> Plan:
+    """Tap (the approval flag, via the chat adapter) -> re-verify live -> execute -> assert, for one client run.
+    Appends to the run's trace. Idempotency keys live in <state_dir>/sent.json."""
+    state_dir = Path(state_dir)
+    plan_path = state_dir / "plans" / f"{run_id}.json"
+    if not plan_path.exists():
+        raise FileNotFoundError(f"no plan {run_id} for {email}")
+    plan = plan_from_json(json.loads(plan_path.read_text()))
+    trace = Tracer(run_id, state_dir / "traces" / f"{run_id}.jsonl", append=True)
+    return gate_and_execute(plan, plan_ts, ledger=ledger, inbox=inbox, calendar=calendar, chat=chat,
+                            state_dir=state_dir, traces_dir=state_dir / "traces", trace=trace, run_id=run_id)
 
 
 def _groups(plan: Plan) -> dict[str, list]:

@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="en" class="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OWED · Be the client</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  html { color-scheme: dark; }
+  body { background:#0a0e14; color:#e6edf3; font-size:15px; }
+  ::-webkit-scrollbar { width:8px; height:8px; } ::-webkit-scrollbar-thumb { background:#2a3644; border-radius:4px; }
+  .panel { background:#10161f; border:1px solid #1f2a37; border-radius:8px; }
+  .chip { display:inline-flex; align-items:center; gap:.35rem; padding:.1rem .5rem; border-radius:4px; font-size:12px; font-weight:600; letter-spacing:.02em; text-transform:uppercase; border:1px solid transparent; }
+  .chip-ok { color:#3fb950; border-color:#1f4d2b; background:#0f2417; } .chip-bad { color:#f85149; border-color:#5a1f1f; background:#2a1010; }
+  .chip-warn { color:#d29922; border-color:#4d3a10; background:#241c08; } .chip-info { color:#58a6ff; border-color:#1f3a5a; background:#0d1b2e; }
+  .chip-mute { color:#8b98a8; border-color:#2a3644; background:#131b25; }
+  .field { background:#0a0e14; border:1px solid #2a3644; border-radius:6px; padding:.5rem .7rem; color:#e6edf3; font-size:14px; width:100%; }
+  .field:focus { outline:none; border-color:#58a6ff; }
+  .btn { border:1px solid #2a3644; background:#141d28; color:#e6edf3; border-radius:6px; padding:.5rem .9rem; font-size:14px; font-weight:600; }
+  .btn:hover { border-color:#3a4a5c; } .btn:disabled { opacity:.45; cursor:not-allowed; }
+  .btn-go { background:#0d1b2e; border-color:#1f3a5a; color:#58a6ff; } .btn-ok { background:#0f2417; border-color:#1f4d2b; color:#3fb950; }
+  pre.mail { white-space:pre-wrap; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:13.5px; line-height:1.45; color:#c9d4e0; background:#0a0e14; border:1px solid #1f2a37; border-radius:6px; padding:.6rem .75rem; }
+  .log { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:13.5px; line-height:1.55; }
+  .log .refused { color:#f85149; } .log .ok { color:#3fb950; } .log .decide { color:#58a6ff; } .log .warn { color:#d29922; }
+  .rowline { border-bottom:1px solid #161e29; }
+  .spin { display:inline-block; width:12px; height:12px; border:2px solid #2a3644; border-top-color:#58a6ff; border-radius:50%; animation:sp .8s linear infinite; vertical-align:-1px; }
+  @keyframes sp { to { transform:rotate(360deg);} }
+  .mute { color:#8b98a8; }
+</style>
+</head>
+<body class="min-h-screen">
+<div class="mx-auto max-w-[1500px] px-5 py-4 flex flex-col gap-3">
+
+  <header class="flex items-end justify-between gap-6">
+    <div>
+      <div class="flex items-baseline gap-3">
+        <h1 class="text-[22px] font-bold tracking-tight">OWED <span class="mute font-medium">· Be the client</span></h1>
+        <a href="https://rehearsal-room-ui-e89f5f.vercel.app" class="text-[13px] text-[#58a6ff] hover:underline">← Rehearsal Room</a>
+      </div>
+      <p class="text-[14px] text-[#b7c2cf] mt-1">You play both roles in this sandbox: the client, by email, and the freelancer, by the Approve button. OWED seeds a $3,400 test invoice in your name, rehearses the chase against a shadow inbox, and sends you the real email only after you approve. Pay the link it sends and watch the invoice close.</p>
+    </div>
+    <span id="phase" class="chip chip-mute shrink-0">idle</span>
+  </header>
+
+  <section class="panel px-4 py-3 grid grid-cols-[1.2fr_1.6fr_auto_auto] gap-3 items-end">
+    <label class="flex flex-col gap-1 text-[12px] mute">your email (the chase lands here)
+      <input id="email" class="field" type="email" placeholder="you@example.com" autocomplete="email"></label>
+    <label class="flex flex-col gap-1 text-[12px] mute">Slack incoming webhook, optional (the plan and result post there too)
+      <input id="webhook" class="field" type="url" placeholder="https://hooks.slack.com/services/…"></label>
+    <button id="start" class="btn btn-go"><span id="startSpin" class="spin hidden mr-1"></span>Start</button>
+    <button id="approve" class="btn btn-ok" disabled>Approve ✅</button>
+  </section>
+
+  <div id="msg" class="text-[13.5px] mute px-1"></div>
+
+  <div class="grid grid-cols-3 gap-3 items-start">
+    <div class="col-span-2 flex flex-col gap-3">
+      <section class="panel">
+        <div class="flex items-center justify-between px-4 py-2 border-b border-[#1f2a37]">
+          <h2 class="text-[13px] font-bold tracking-wider text-[#3fb950]">WILL SEND <span id="sendCount" class="mute font-mono font-normal ml-1"></span></h2>
+          <span id="invoice" class="mute text-[12px] font-mono"></span>
+        </div>
+        <div id="intents" class="p-3 flex flex-col gap-2"><div class="mute text-[13.5px] px-1 py-1">Enter your email and press Start.</div></div>
+      </section>
+      <section class="panel">
+        <div class="flex items-center justify-between px-4 py-2 border-b border-[#1f2a37]">
+          <h2 class="text-[13px] font-bold tracking-wider text-[#f85149]">REFUSED <span id="refuseCount" class="mute font-mono font-normal ml-1"></span></h2>
+        </div>
+        <div id="refusals" class="p-3 flex flex-col gap-2"></div>
+      </section>
+      <section class="panel">
+        <div class="flex items-center justify-between px-4 py-2 border-b border-[#1f2a37]">
+          <h2 class="text-[13px] font-bold tracking-wider">POSTS <span class="mute text-[12px] font-normal ml-2">what went to your Slack (or would have)</span></h2>
+        </div>
+        <div id="posts" class="p-3 flex flex-col gap-2"></div>
+      </section>
+    </div>
+
+    <div class="flex flex-col gap-3">
+      <section id="closedBox" class="panel border-[#1f4d2b] hidden">
+        <div class="px-4 py-3 log ok font-bold text-[15px]" id="closedLine"></div>
+      </section>
+      <section class="panel">
+        <div class="flex items-center justify-between px-4 py-2 border-b border-[#1f2a37]">
+          <h2 class="text-[13px] font-bold tracking-wider">END STATE <span id="endSummary" class="mute font-mono font-normal ml-1"></span></h2>
+          <span class="mute text-[12px]">read back after execute</span>
+        </div>
+        <div id="endstate" class="px-3 py-1"><div class="mute text-[13px] py-2">not asserted yet</div></div>
+      </section>
+      <section class="panel">
+        <div class="flex items-center justify-between px-4 py-2 border-b border-[#1f2a37]">
+          <h2 class="text-[13px] font-bold tracking-wider">TRACE <span id="traceCount" class="mute font-mono font-normal ml-1"></span></h2>
+          <span class="mute text-[12px]" id="polling">polls every 3 s</span>
+        </div>
+        <div id="trace" class="px-3 py-2 log max-h-[560px] overflow-y-auto"></div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const money = (n) => (n == null || n === '') ? '' : '$' + Number(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  const KIND = { send_email: ['chip-info','EMAIL'], create_event: ['chip-warn','CALENDAR'], create_payment_link: ['chip-info','STRIPE LINK'], post_chat: ['chip-mute','SLACK'] };
+  const PHASE = { none: 'chip-mute', idle: 'chip-mute', rehearsing: 'chip-info', rehearsed: 'chip-warn', executing: 'chip-info', executed: 'chip-ok', failed: 'chip-bad' };
+  let runId = null, timer = null, busy = false;
+
+  try { $('email').value = localStorage.getItem('owed.email') || ''; $('webhook').value = localStorage.getItem('owed.webhook') || ''; } catch (e) {}
+
+  const email = () => $('email').value.trim().toLowerCase();
+  function say(text, bad = false) { $('msg').textContent = text; $('msg').className = 'text-[13.5px] px-1 ' + (bad ? 'text-[#f85149]' : 'mute'); }
+  function setPhase(p) { $('phase').textContent = p || 'idle'; $('phase').className = 'chip shrink-0 ' + (PHASE[p] || 'chip-mute'); }
+
+  async function api(method, path, body) {
+    const r = await fetch(path, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined, cache: 'no-store' });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(data.detail || (r.status + ' ' + r.statusText));
+    return data;
+  }
+
+  function renderIntents(list) {
+    $('sendCount').textContent = list.length;
+    if (!list.length) { $('intents').innerHTML = `<div class="mute text-[13.5px] px-1 py-1">Nothing. The agent would send no email and create no link.</div>`; return; }
+    $('intents').innerHTML = list.map(it => {
+      const [cls, label] = KIND[it.kind] || ['chip-mute', it.kind];
+      const p = it.payload || {};
+      let body = '';
+      if (it.kind === 'send_email') body = `
+        <div class="grid grid-cols-[64px_1fr] gap-x-3 gap-y-0.5 text-[13.5px] mt-1.5">
+          <span class="mute">to</span><span class="font-mono">${esc(p.to)}</span>
+          <span class="mute">subject</span><span>${esc(p.subject)}</span>
+          <span class="mute">amount</span><span class="font-mono">${esc(money(p.amount))} <span class="mute">from ledger</span></span>
+        </div><pre class="mail mt-2">${esc(p.body)}</pre>`;
+      else if (it.kind === 'create_payment_link') body = `<div class="text-[13.5px] mt-1.5"><span class="mute">amount</span> <span class="font-mono">${esc(money(p.amount))}</span> <span class="mute">· real link created by the executor, appended under the sign-off</span></div>`;
+      else body = `<pre class="mail mt-2">${esc(p.text || JSON.stringify(p, null, 2))}</pre>`;
+      return `<div class="rounded-md border border-[#1f2a37] bg-[#0a0e14]/40 px-3 py-2">
+        <div class="flex items-center gap-2"><span class="chip ${cls}">${esc(label)}</span><span class="font-semibold">${esc(it.invoice_id)}</span><span class="mute">step ${esc(it.step)}</span><span class="font-mono text-[12px] mute ml-1">key ${esc(it.idempotency_key)}</span>${it.requires_tap ? '<span class="chip chip-warn ml-auto">requires ✅</span>' : ''}</div>${body}</div>`;
+    }).join('');
+  }
+
+  function renderRefusals(list) {
+    $('refuseCount').textContent = list.length;
+    $('refusals').innerHTML = list.length ? list.map(r => `
+      <div class="rounded-md border border-[#5a1f1f] bg-[#1a0d0d] px-3 py-2">
+        <div class="flex items-center gap-2 log"><span class="refused font-bold">REFUSED ${esc(r.invoice_id)} step ${esc(r.step)}</span><span class="chip chip-bad ml-auto">${esc(r.reason)}</span></div>
+        <div class="text-[13.5px] mt-1 text-[#e0c4c4]">${esc(r.detail)}</div></div>`).join('')
+      : `<div class="mute text-[13.5px] px-1 py-1">None.</div>`;
+  }
+
+  function renderEnd(rows) {
+    if (!Array.isArray(rows) || !rows.length) { $('endstate').innerHTML = `<div class="mute text-[13px] py-2">not asserted yet</div>`; $('endSummary').textContent = ''; return; }
+    const okN = rows.filter(r => r.expected === r.actual).length;
+    $('endSummary').textContent = `${okN}/${rows.length}`; $('endSummary').className = 'font-mono font-normal ml-1 ' + (okN === rows.length ? 'text-[#3fb950]' : 'text-[#f85149]');
+    $('endstate').innerHTML = rows.map(r => { const ok = r.expected === r.actual; return `
+      <div class="rowline flex items-center gap-3 py-1.5"><span class="w-3 h-3 rounded-full shrink-0" style="background:${ok ? '#3fb950' : '#f85149'}"></span>
+      <span class="w-[78px] font-semibold text-[13.5px]">${esc(r.app)}</span><span class="font-mono text-[13px] ${ok ? 'text-[#3fb950]' : 'text-[#f85149]'}">${esc(r.actual)}<span class="mute">/${esc(r.expected)}</span></span>
+      <span class="mute text-[12.5px] truncate" title="${esc(r.detail)}">${esc(r.detail || '')}</span></div>`; }).join('');
+  }
+
+  function traceClass(t) {
+    const d = (t.decision || '').toUpperCase();
+    if (t.phase === 'abort' || d.startsWith('REFUSED') || d.includes('ABORTED') || d.startsWith('FAILED') || d.includes('MISMATCH')) return 'refused';
+    if (d.startsWith('PASS') || d.includes('END STATE OK') || d.startsWith('SENT') || d.startsWith('CREATED') || t.phase === 'done') return 'ok';
+    if (t.phase === 'decide' || t.phase === 'tap' || t.phase === 'posted_plan') return 'decide';
+    if (t.phase === 'reverify') return 'warn';
+    return '';
+  }
+
+  function renderTrace(rows) {
+    $('traceCount').textContent = rows.length || '';
+    const el = $('trace');
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    el.innerHTML = rows.map(t => `<div class="flex gap-2 rowline py-0.5"><span class="mute shrink-0 w-[62px]">${esc((t.ts || '').slice(11, 19))}</span><span class="mute shrink-0 w-[104px]">${esc(t.phase)}</span><span class="${traceClass(t)}">${esc(t.decision)}</span></div>`).join('');
+    if (atBottom) el.scrollTop = el.scrollHeight;
+  }
+
+  function renderPosts(list) {
+    $('posts').innerHTML = list.length ? list.map(p => `<div class="rounded-md border border-[#1f2a37] px-3 py-2"><div class="flex gap-2 mute text-[12px] mb-1"><span>${esc((p.at || '').slice(11, 19))}</span><span class="chip ${p.delivered === 'slack_webhook' ? 'chip-ok' : 'chip-mute'}">${p.delivered === 'slack_webhook' ? 'posted to slack' : 'panel only'}</span></div><pre class="mail">${esc(p.text)}</pre></div>`).join('')
+      : `<div class="mute text-[13.5px] px-1 py-1">Nothing posted yet.</div>`;
+  }
+
+  function render(s) {
+    setPhase(s.phase);
+    runId = s.run_id;
+    const inv = s.invoice || {};
+    $('invoice').textContent = inv.invoice_id ? `${inv.invoice_id} · ${money(inv.amount_due)} · ${inv.days_overdue}d overdue · ${inv.created ? 'seeded now' : 'reused open invoice'}` : '';
+    renderIntents(s.plan?.intents || []);
+    renderRefusals(s.plan?.refusals || []);
+    renderEnd(s.end_state);
+    renderTrace(s.trace || []);
+    renderPosts(s.posts || []);
+    const closed = s.closed && s.closed.line;
+    $('closedBox').classList.toggle('hidden', !closed);
+    if (closed) $('closedLine').textContent = s.closed.line;
+    $('approve').disabled = !(s.phase === 'rehearsed' && (s.plan?.intents || []).length);
+    if (s.phase === 'failed' && s.error) say(s.error, true);
+    else if (s.phase === 'rehearsed') say(`Rehearsed: ${s.summary}. Nothing has been sent. Approve to execute for real.`);
+    else if (s.phase === 'executing') say('Approved. Re-verifying the ledger, then executing through the executor with idempotency keys…');
+    else if (s.phase === 'executed') say(closed ? s.closed.line : `Executed: ${s.summary}. Check your inbox. Pay the link in the email and this panel will show the invoice closing.`);
+    else if (s.phase === 'none') say('No run yet for this email.');
+  }
+
+  async function poll() {
+    if (!email()) return;
+    try { render(await api('GET', `/client/status?email=${encodeURIComponent(email())}`)); $('polling').textContent = 'polls every 3 s'; }
+    catch (e) { $('polling').textContent = 'status: ' + e.message; }
+  }
+  function startPolling() { if (timer) clearInterval(timer); poll(); timer = setInterval(poll, 3000); }
+
+  $('start').addEventListener('click', async () => {
+    if (busy) return;
+    if (!email()) { say('Enter your email first.', true); return; }
+    try { localStorage.setItem('owed.email', email()); localStorage.setItem('owed.webhook', $('webhook').value.trim()); } catch (e) {}
+    busy = true; $('start').disabled = true; $('startSpin').classList.remove('hidden');
+    setPhase('rehearsing'); say('Seeding a $3,400 test invoice in Stripe for you, snapshotting the apps, rehearsing against the shadow inbox…');
+    startPolling();
+    try {
+      const r = await api('POST', '/client/start', { email: email(), slack_webhook: $('webhook').value.trim() || null });
+      runId = r.run_id; await poll();
+    } catch (e) { say(e.message, true); setPhase('failed'); }
+    finally { busy = false; $('start').disabled = false; $('startSpin').classList.add('hidden'); }
+  });
+
+  $('approve').addEventListener('click', async () => {
+    if (!runId) return;
+    $('approve').disabled = true;
+    try { await api('POST', '/client/approve', { email: email(), run_id: runId }); await poll(); }
+    catch (e) { say(e.message, true); }
+  });
+
+  $('email').addEventListener('change', startPolling);
+  if (email()) startPolling();
+})();
+</script>
+</body>
+</html>

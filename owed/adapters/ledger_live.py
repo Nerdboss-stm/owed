@@ -78,6 +78,20 @@ class StripeLedger(Ledger):
         links = retry_read(lambda: list(stripe.PaymentLink.list(limit=100, active=True).auto_paging_iter()))
         return sum(1 for l in links if _meta(l.metadata).get("invoice_id") == invoice_id)
 
+    def paid_via_link(self, invoice_id: str) -> float:
+        """Not part of the contract. Dollars received through this invoice's payment links (completed
+        Checkout sessions). A payment link is its own Stripe object, so paying it leaves the invoice open;
+        the Be-the-client status panel reads this to show the CLOSED line. Reads only."""
+        links = retry_read(lambda: list(stripe.PaymentLink.list(limit=100).auto_paging_iter()))
+        total = 0
+        for link in links:
+            if _meta(link.metadata).get("invoice_id") != invoice_id:
+                continue
+            sessions = retry_read(lambda: list(
+                stripe.checkout.Session.list(payment_link=link.id, limit=100).auto_paging_iter()))
+            total += sum((s.amount_total or 0) for s in sessions if s.payment_status == "paid")
+        return total / 100
+
     # ---- writes (only executor.py may call these) ----
     def create_payment_link(self, invoice_id: str) -> str:
         inv = self.get(invoice_id)

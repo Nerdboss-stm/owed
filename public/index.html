@@ -51,6 +51,7 @@
       <p class="text-[14px] text-[#b7c2cf] mt-1">Rehearse in a sandbox, execute behind a gate. Every email is rehearsed against a shadow inbox and checked by a second model before it is allowed to send.</p>
     </div>
     <div class="flex items-center gap-2 shrink-0">
+      <a id="clientLink" class="pick !py-1.5 !px-3 text-[13px] hidden" target="_blank" rel="noopener" title="Enter your email, get the real chase email, approve it yourself. Runs on the freelancer's machine behind a tunnel.">Be the client ↗</a>
       <span id="status" class="chip chip-mute">loading</span>
       <button id="liveBtn" class="pick !py-1.5 !px-3 text-[13px]" title="Run planner → drafter → verifier against Shadow adapters (40 s budget). Falls back to the precomputed plan.">
         <span id="liveSpin" class="spin hidden mr-1"></span>Rehearse live (shadow)
@@ -332,6 +333,11 @@
     if (/^[0-9]$/.test(e.key)) { const i = e.key === '0' ? 9 : Number(e.key) - 1; if (scenarios[i]) select(scenarios[i].name); }
     if (e.key === 'l' || e.key === 'L') current && select(current, true);
   });
+
+  // "Be the client" runs on the freelancer's machine behind a tunnel; client.json carries its current URL.
+  fetch('/client.json', { cache: 'no-store' }).then(r => r.ok ? r.json() : null).then(d => {
+    if (d && d.url) { $('clientLink').href = d.url; $('clientLink').classList.remove('hidden'); }
+  }).catch(() => {});
 
   (async () => {
     try {
