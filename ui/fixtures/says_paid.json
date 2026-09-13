@@ -1,0 +1,122 @@
+{
+  "scenario": "says_paid",
+  "order": 3,
+  "title": "client says \"sent Friday\"",
+  "description": "Client replied: \"Sent the wire Friday, should land Monday.\" Ledger still shows $3,400 open. No chase; flag to freelancer.",
+  "expected": "no chase, flag for freelancer",
+  "source": "fixture",
+  "cached": true,
+  "run_id": "rehearsal-says_paid-140211",
+  "created_at": "2026-09-13T14:02:11",
+  "today": "2026-09-13",
+  "invoices": [
+    {
+      "invoice_id": "INV-0042",
+      "client_name": "Dan Reyes",
+      "client_email": "dan@northwindlabs.com",
+      "amount_due": 3400.0,
+      "amount_total": 3400.0,
+      "due_date": "2026-08-25",
+      "days_overdue": 19,
+      "paid": false,
+      "last_chased_step": 0,
+      "thread_state": "says_paid",
+      "thread_id": "thr-8f21"
+    }
+  ],
+  "intents": [
+    {
+      "kind": "post_chat",
+      "invoice_id": "INV-0042",
+      "step": 0,
+      "payload": {
+        "text": "FLAG INV-0042: client says paid (\"sent the wire Friday\"), ledger still open $3,400. Check bank, do not chase."
+      },
+      "idempotency_key": "INV-0042:0",
+      "requires_tap": false
+    }
+  ],
+  "refusals": [
+    {
+      "invoice_id": "INV-0042",
+      "step": 2,
+      "reason": "says_paid",
+      "detail": "client says paid (\"sent the wire Friday\"); ledger still open $3,400; flagged to freelancer, no chase"
+    }
+  ],
+  "end_state": [
+    {
+      "app": "stripe",
+      "expected": 0,
+      "actual": 0,
+      "detail": ""
+    },
+    {
+      "app": "gmail",
+      "expected": 0,
+      "actual": 0,
+      "detail": "nothing sent to client"
+    },
+    {
+      "app": "calendar",
+      "expected": 0,
+      "actual": 0,
+      "detail": ""
+    },
+    {
+      "app": "slack",
+      "expected": 1,
+      "actual": 1,
+      "detail": "flag posted for freelancer"
+    }
+  ],
+  "trace": [
+    {
+      "ts": "2026-09-13T14:02:11",
+      "run_id": "rehearsal-says_paid-140211",
+      "phase": "read_ledger",
+      "invoice_id": "INV-0042",
+      "decision": "ledger: INV-0042 $3,400 open, due 2026-08-25, 19 days overdue, last chased step 0",
+      "data": {
+        "amount_due": 3400.0,
+        "days_overdue": 19
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:14",
+      "run_id": "rehearsal-says_paid-140211",
+      "phase": "read_thread",
+      "invoice_id": "INV-0042",
+      "decision": "thread thr-8f21: client 2026-09-11: \"Sent the wire Friday, should land Monday.\"",
+      "data": {}
+    },
+    {
+      "ts": "2026-09-13T14:02:17",
+      "run_id": "rehearsal-says_paid-140211",
+      "phase": "classify",
+      "invoice_id": "INV-0042",
+      "decision": "thread_state = says_paid",
+      "data": {
+        "thread_state": "says_paid"
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:20",
+      "run_id": "rehearsal-says_paid-140211",
+      "phase": "decide",
+      "invoice_id": "INV-0042",
+      "decision": "REFUSED INV-0042 step 2: thread says_paid overrides day 19; verify ledger, chase nothing",
+      "data": {
+        "reason": "says_paid"
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:23",
+      "run_id": "rehearsal-says_paid-140211",
+      "phase": "rehearsal_done",
+      "invoice_id": null,
+      "decision": "REHEARSAL DONE: would send 0, refused 1, flag 1",
+      "data": {}
+    }
+  ]
+}

@@ -1,0 +1,188 @@
+{
+  "scenario": "duplicate",
+  "order": 5,
+  "title": "duplicate invoice numbers",
+  "description": "The ledger returns INV-0042 twice (a re-issued row). One idempotency key, one chase.",
+  "expected": "one chase, not two",
+  "source": "fixture",
+  "cached": true,
+  "run_id": "rehearsal-duplicate-140211",
+  "created_at": "2026-09-13T14:02:11",
+  "today": "2026-09-13",
+  "invoices": [
+    {
+      "invoice_id": "INV-0042",
+      "client_name": "Dan Reyes",
+      "client_email": "dan@northwindlabs.com",
+      "amount_due": 3400.0,
+      "amount_total": 3400.0,
+      "due_date": "2026-09-01",
+      "days_overdue": 12,
+      "paid": false,
+      "last_chased_step": 0,
+      "thread_state": "none",
+      "thread_id": "thr-8f21"
+    },
+    {
+      "invoice_id": "INV-0042",
+      "client_name": "Dan Reyes",
+      "client_email": "dan@northwindlabs.com",
+      "amount_due": 3400.0,
+      "amount_total": 3400.0,
+      "due_date": "2026-09-01",
+      "days_overdue": 12,
+      "paid": false,
+      "last_chased_step": 0,
+      "thread_state": "none",
+      "thread_id": "thr-8f21 (dup row)"
+    }
+  ],
+  "intents": [
+    {
+      "kind": "create_payment_link",
+      "invoice_id": "INV-0042",
+      "step": 2,
+      "payload": {
+        "amount": 3400.0,
+        "invoice_id": "INV-0042"
+      },
+      "idempotency_key": "INV-0042:2",
+      "requires_tap": false
+    },
+    {
+      "kind": "send_email",
+      "invoice_id": "INV-0042",
+      "step": 2,
+      "payload": {
+        "to": "dan@northwindlabs.com",
+        "subject": "Invoice INV-0042 \u2014 $3,400 past due",
+        "body": "Hi Dan,\n\nFollowing up on invoice INV-0042 for $3,400, which was due Sep 1. Here is a payment link so it is one click:\n\n{payment_link}\n\nIf it is already on its way, ignore this and thank you.\n\nMaya",
+        "amount": 3400.0,
+        "thread_id": "thr-8f21"
+      },
+      "idempotency_key": "INV-0042:2",
+      "requires_tap": false
+    }
+  ],
+  "refusals": [
+    {
+      "invoice_id": "INV-0042",
+      "step": 2,
+      "reason": "already_sent",
+      "detail": "duplicate ledger row; idempotency key INV-0042:2 already in this plan"
+    }
+  ],
+  "end_state": [
+    {
+      "app": "stripe",
+      "expected": 1,
+      "actual": 1,
+      "detail": "one link"
+    },
+    {
+      "app": "gmail",
+      "expected": 1,
+      "actual": 1,
+      "detail": "one email"
+    },
+    {
+      "app": "calendar",
+      "expected": 0,
+      "actual": 0,
+      "detail": ""
+    },
+    {
+      "app": "slack",
+      "expected": 1,
+      "actual": 1,
+      "detail": ""
+    }
+  ],
+  "trace": [
+    {
+      "ts": "2026-09-13T14:02:11",
+      "run_id": "rehearsal-duplicate-140211",
+      "phase": "read_ledger",
+      "invoice_id": "INV-0042",
+      "decision": "ledger: INV-0042 $3,400 open, due 2026-09-01, 12 days overdue, last chased step 0",
+      "data": {
+        "amount_due": 3400.0,
+        "days_overdue": 12
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:14",
+      "run_id": "rehearsal-duplicate-140211",
+      "phase": "read_thread",
+      "invoice_id": "INV-0042",
+      "decision": "thread thr-8f21: no reply since 2026-08-20",
+      "data": {}
+    },
+    {
+      "ts": "2026-09-13T14:02:17",
+      "run_id": "rehearsal-duplicate-140211",
+      "phase": "classify",
+      "invoice_id": "INV-0042",
+      "decision": "thread_state = none",
+      "data": {
+        "thread_state": "none"
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:20",
+      "run_id": "rehearsal-duplicate-140211",
+      "phase": "read_ledger",
+      "invoice_id": "INV-0042",
+      "decision": "ledger: INV-0042 returned again (duplicate row)",
+      "data": {
+        "dup": true
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:23",
+      "run_id": "rehearsal-duplicate-140211",
+      "phase": "decide",
+      "invoice_id": "INV-0042",
+      "decision": "DECIDE INV-0042 step 2 (row 1)",
+      "data": {
+        "step": 2
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:27",
+      "run_id": "rehearsal-duplicate-140211",
+      "phase": "decide",
+      "invoice_id": "INV-0042",
+      "decision": "REFUSED INV-0042 step 2 (row 2): key INV-0042:2 already planned",
+      "data": {
+        "reason": "already_sent"
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:30",
+      "run_id": "rehearsal-duplicate-140211",
+      "phase": "draft",
+      "invoice_id": "INV-0042",
+      "decision": "DRAFT INV-0042 step 2: 71 words, $3,400",
+      "data": {}
+    },
+    {
+      "ts": "2026-09-13T14:02:33",
+      "run_id": "rehearsal-duplicate-140211",
+      "phase": "verify",
+      "invoice_id": "INV-0042",
+      "decision": "VERIFY INV-0042 step 2: PASS",
+      "data": {
+        "pass": true
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:36",
+      "run_id": "rehearsal-duplicate-140211",
+      "phase": "rehearsal_done",
+      "invoice_id": null,
+      "decision": "REHEARSAL DONE: would send 1, refused 1",
+      "data": {}
+    }
+  ]
+}

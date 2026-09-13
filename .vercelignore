@@ -1,0 +1,11 @@
+.env
+.env.*
+credentials.json
+token.json
+.git
+.claude
+.venv
+__pycache__
+traces
+tests
+evals

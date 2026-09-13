@@ -1,0 +1,148 @@
+{
+  "scenario": "partial",
+  "order": 4,
+  "title": "partial payment",
+  "description": "$5,000 invoice, $2,000 received. Balance $3,000 comes from the ledger; the drafter cannot compute it.",
+  "expected": "chase remainder only, correct amount",
+  "source": "fixture",
+  "cached": true,
+  "run_id": "rehearsal-partial-140211",
+  "created_at": "2026-09-13T14:02:11",
+  "today": "2026-09-13",
+  "invoices": [
+    {
+      "invoice_id": "INV-0051",
+      "client_name": "Priya Natarajan",
+      "client_email": "priya@hollowaybrand.com",
+      "amount_due": 3000.0,
+      "amount_total": 5000.0,
+      "due_date": "2026-09-02",
+      "days_overdue": 11,
+      "paid": false,
+      "last_chased_step": 0,
+      "thread_state": "none",
+      "thread_id": "thr-c04a"
+    }
+  ],
+  "intents": [
+    {
+      "kind": "create_payment_link",
+      "invoice_id": "INV-0051",
+      "step": 2,
+      "payload": {
+        "amount": 3000.0,
+        "invoice_id": "INV-0051"
+      },
+      "idempotency_key": "INV-0051:2",
+      "requires_tap": false
+    },
+    {
+      "kind": "send_email",
+      "invoice_id": "INV-0051",
+      "step": 2,
+      "payload": {
+        "to": "priya@hollowaybrand.com",
+        "subject": "Invoice INV-0051 \u2014 $3,000 past due",
+        "body": "Hi Priya,\n\nFollowing up on invoice INV-0051 for $3,000, which was due Sep 2. Here is a payment link so it is one click:\n\n{payment_link}\n\nIf it is already on its way, ignore this and thank you.\n\nMaya",
+        "amount": 3000.0,
+        "thread_id": "thr-c04a"
+      },
+      "idempotency_key": "INV-0051:2",
+      "requires_tap": false
+    }
+  ],
+  "refusals": [],
+  "end_state": [
+    {
+      "app": "stripe",
+      "expected": 1,
+      "actual": 1,
+      "detail": "payment link for $3,000"
+    },
+    {
+      "app": "gmail",
+      "expected": 1,
+      "actual": 1,
+      "detail": "email amount $3,000 == balance"
+    },
+    {
+      "app": "calendar",
+      "expected": 0,
+      "actual": 0,
+      "detail": ""
+    },
+    {
+      "app": "slack",
+      "expected": 1,
+      "actual": 1,
+      "detail": ""
+    }
+  ],
+  "trace": [
+    {
+      "ts": "2026-09-13T14:02:11",
+      "run_id": "rehearsal-partial-140211",
+      "phase": "read_ledger",
+      "invoice_id": "INV-0051",
+      "decision": "ledger: INV-0051 $3,000 open, due 2026-09-02, 11 days overdue, last chased step 0",
+      "data": {
+        "amount_due": 3000.0,
+        "days_overdue": 11
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:14",
+      "run_id": "rehearsal-partial-140211",
+      "phase": "read_thread",
+      "invoice_id": "INV-0051",
+      "decision": "thread thr-c04a: no client reply since invoice sent",
+      "data": {}
+    },
+    {
+      "ts": "2026-09-13T14:02:17",
+      "run_id": "rehearsal-partial-140211",
+      "phase": "classify",
+      "invoice_id": "INV-0051",
+      "decision": "thread_state = none",
+      "data": {
+        "thread_state": "none"
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:20",
+      "run_id": "rehearsal-partial-140211",
+      "phase": "decide",
+      "invoice_id": "INV-0051",
+      "decision": "DECIDE INV-0051 step 2: 11 days overdue, balance $3,000 of $5,000",
+      "data": {
+        "step": 2
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:23",
+      "run_id": "rehearsal-partial-140211",
+      "phase": "draft",
+      "invoice_id": "INV-0051",
+      "decision": "DRAFT INV-0051 step 2: amount $3,000 passed as number, drafter did not compute",
+      "data": {}
+    },
+    {
+      "ts": "2026-09-13T14:02:27",
+      "run_id": "rehearsal-partial-140211",
+      "phase": "verify",
+      "invoice_id": "INV-0051",
+      "decision": "VERIFY INV-0051 step 2: amount in body == ledger balance $3,000 \u2192 PASS",
+      "data": {
+        "pass": true
+      }
+    },
+    {
+      "ts": "2026-09-13T14:02:30",
+      "run_id": "rehearsal-partial-140211",
+      "phase": "rehearsal_done",
+      "invoice_id": null,
+      "decision": "REHEARSAL DONE: would send 1, refused 0",
+      "data": {}
+    }
+  ]
+}
