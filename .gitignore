@@ -15,6 +15,7 @@ traces/*
 !traces/live-close-1.jsonl
 !traces/live-step3-1.jsonl
 !traces/live-scale-1.jsonl
+!traces/live-step3-2.jsonl
 .pytest_cache/
 .claude/worktrees/
 .claude/settings.local.json
