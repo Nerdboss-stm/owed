@@ -70,14 +70,24 @@ def injection_check(text: str) -> bool:
     return _any(_INJECTION, text) is not None
 
 
+def _mailbox(addr: str) -> str:
+    """'Name <a+tag@x.com>' -> 'a@x.com': +tag addresses are the same mailbox."""
+    a = addr.strip().lower()
+    if "<" in a and ">" in a:
+        a = a[a.index("<") + 1:a.index(">")]
+    local, _, domain = a.partition("@")
+    return f"{local.split('+')[0]}@{domain}"
+
+
 def last_client_message(messages: list[Message], client_email: Optional[str] = None) -> Optional[Message]:
-    """Latest message from the client. With client_email, only that sender counts. Without it, the client
-    is whoever is neither FREELANCER_EMAIL nor the sender of the first message (the freelancer sent the invoice)."""
+    """Latest message from the client. With client_email, only that mailbox counts (+tag aliases included).
+    Without it, the client is whoever is neither FREELANCER_EMAIL nor the sender of the first message."""
     if not messages:
         return None
     ordered = sorted(messages, key=lambda m: m.ts)
     if client_email:
-        return next((m for m in reversed(ordered) if client_email.lower() in m.from_addr.lower()), None)
+        want = _mailbox(client_email)
+        return next((m for m in reversed(ordered) if _mailbox(m.from_addr) == want), None)
     load_env()
     me = {ordered[0].from_addr.lower()}
     if os.environ.get("FREELANCER_EMAIL"):

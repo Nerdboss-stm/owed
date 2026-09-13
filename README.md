@@ -120,6 +120,9 @@ Live runs today, real apps, test accounts. Each trace is the file the run wrote,
 - [live-clean-3](traces/live-clean-3.jsonl), the same run a minute later: refused at rehearsal with `already_sent`, nothing sent.
 - [live-paid-1](traces/live-paid-1.jsonl), money arrived in the tap window: INV-0043 marked paid in Stripe after the plan was posted; after the tap the live ledger was re-read and the run aborted, "ABORTED INV-0043 step 2: paid since rehearsal ($2,150.00 received)". Nothing sent.
 - [live-inject-1](traces/live-inject-1.jsonl), a client email with an instruction aimed at the agent: classified `injection` by the deterministic gate before any model call, refused at rehearsal, ledger read back unchanged.
+- [live-close-1](traces/live-close-1.jsonl), the loop closed: the INV-0042 payment link was paid in the browser, the run reconciled the checkout session, marked the invoice paid out of band, planned a receipt reply, and after the tap sent it and posted "closed, $3,400.00 received". Nothing else sent.
+- [live-step3-1](traces/live-step3-1.jsonl), step 3 live: INV-0045 at day 22 planned a call, both intents flagged `requires_tap`; after the tap one Calendar event with the client as attendee, one email with the slot appended, end state Calendar 1/1, Gmail 1/1.
+- [live-scale-1](traces/live-scale-1.jsonl), rehearsal only over 12 invoices across 5 clients (+tag mailboxes): 5 chases planned (two step 1, three step 2 with links, one on a partial balance of $1,800 of $3,000), 1 receipt for an invoice paid after a chase, refused `disputes`, `promises_date`, `injection` on real client replies, three `already_sent`, and the invoice due tomorrow absent. Would send 6, refused 7, zero live writes.
 
 **What still fails or is not proven:**
 
