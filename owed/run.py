@@ -35,12 +35,13 @@ MANDATE_PATH = ROOT / "owed" / "mandate" / "mandate.yaml"
 class Tracer:
     """Appends one TraceLine per step to traces/<run_id>.jsonl and echoes the decision. The log is the demo."""
 
-    def __init__(self, run_id: str, path: Optional[Path] = None, echo: bool = True):
+    def __init__(self, run_id: str, path: Optional[Path] = None, echo: bool = True, append: bool = False):
         self.run_id, self.path, self.echo = run_id, path, echo
         self.lines: list[TraceLine] = []
         if path:
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("")
+            if not (append and path.exists()):
+                path.write_text("")
 
     def __call__(self, phase: str, invoice_id: Optional[str], decision: str, **data: Any) -> TraceLine:
         return self.write(TraceLine(ts=datetime.now(timezone.utc).isoformat(), run_id=self.run_id, phase=phase,  # type: ignore[arg-type]
@@ -139,8 +140,40 @@ def rehearse(world: ShadowWorld, mandate: dict, drafter: Optional[Drafter], run_
         world.inbox.send(inv.client_email, draft["subject"], draft["body"], inv.thread_id)
         world.set_context("", 0)
 
+    # Close the loop: a chased invoice that has since been paid gets one receipt reply (same tap gate).
+    closing = getattr(world.ledger, "paid_after_chase", None)
+    for inv in (closing() if callable(closing) else []):
+        iid = inv.invoice_id
+        trace("decide", iid, f"CLOSE {iid}: paid in full (${inv.amount_total:,.2f} received) after step {inv.last_chased_step}; receipt reply due")
+        from owed.agent.drafter import receipt_draft
+        from owed.agent.verifier import receipt_checks
+        draft = receipt_draft(inv, mandate)
+        refusals = receipt_checks(draft, inv, mandate)
+        if refusals:
+            plan.refusals.extend(refusals)
+            for r in refusals:
+                trace("verify", iid, f"REFUSED {iid} receipt: {r.detail}", reason=r.reason)
+            continue
+        world.set_context(iid, 0, amount=inv.amount_total, receipt=True)
+        world.inbox.send(inv.client_email, draft["subject"], draft["body"], inv.thread_id)
+        world.set_context("", 0)
+
     plan.intents = list(world.intents)
     return plan
+
+
+def plan_from_json(d: dict) -> Plan:
+    """Rebuild a Plan from state/plans/<run_id>.json."""
+    from owed.contract import Intent
+    intents = [Intent(kind=i["kind"], invoice_id=i["invoice_id"], step=i["step"], payload=i.get("payload", {}),
+                      idempotency_key=i.get("idempotency_key", ""), requires_tap=bool(i.get("requires_tap", False)))
+               for i in d.get("intents", [])]
+    refusals = [Refusal(r["invoice_id"], r["step"], r["reason"], r.get("detail", "")) for r in d.get("refusals", [])]
+    try:
+        created = datetime.fromisoformat(str(d.get("created_at")))
+    except ValueError:
+        created = datetime.now(timezone.utc)
+    return Plan(run_id=d["run_id"], created_at=created, intents=intents, refusals=refusals)
 
 
 def _write_plan(state_dir: Path, plan: Plan, end_state: Optional[list] = None) -> Path:
@@ -223,7 +256,8 @@ def format_plan(plan: Plan) -> str:
         if send:
             p = send.payload
             amt = f"${p['amount']:,.2f}" if isinstance(p.get("amount"), (int, float)) else ""
-            out.append(f"WILL SEND  {send.invoice_id} step {send.step} -> {p.get('to')}  {p.get('subject')!r}  {amt}  "
+            what = "receipt (closed)" if p.get("receipt") else f"step {send.step}"
+            out.append(f"WILL SEND  {send.invoice_id} {what} -> {p.get('to')}  {p.get('subject')!r}  {amt}  "
                        f"{' '.join(extras)}{tap}".rstrip())
         else:
             out.append(f"WILL DO    {key}  {' '.join(extras)}{tap}".rstrip())
@@ -250,7 +284,64 @@ def run(*, ledger: Ledger, inbox: Inbox, calendar: Optional[Calendar], chat: Cha
           intents=[i.idempotency_key for i in plan.intents], refusals=[r.reason for r in plan.refusals])
     if rehearse_only:
         return plan
+    return _gated(plan, ledger, inbox, calendar, chat, state_dir, traces_dir, trace, run_id)
 
+
+def _live_adapters(with_chat: bool) -> tuple:
+    """Live adapters, imported here so owed.run stays importable where the SDKs are absent (Vercel api/)."""
+    from owed.adapters.calendar_live import GoogleCalendar
+    from owed.adapters.inbox_live import GmailInbox
+    from owed.adapters.ledger_live import StripeLedger
+    chat = None
+    if with_chat:
+        from owed.adapters.chat_live import SlackChat
+        chat = SlackChat()
+    return StripeLedger(), GmailInbox(), GoogleCalendar(), chat
+
+
+def rehearse_for(client_email: str, state_dir: Path, *, run_id: Optional[str] = None,
+                 traces_dir: Optional[Path] = None, today: Optional[date] = None,
+                 drafter: Optional[Drafter] = None, mandate: Optional[dict] = None) -> Plan:
+    """Rehearse one client's invoices against a snapshot of the live apps. Reads only: no Slack post,
+    no tap, no live write. Writes state_dir/plans/<run_id>.json (and a trace if traces_dir is given).
+    Needs the live credentials; never call this from api/."""
+    from owed.config import today as today_fn
+    state_dir = Path(state_dir)
+    run_id = run_id or f"rehearse-{client_email.split('@')[0]}-{datetime.now().strftime('%H%M%S')}"
+    ledger, inbox, calendar, _ = _live_adapters(with_chat=False)
+    snap = snapshot(ledger, inbox, calendar, today or today_fn())
+    snap["invoices"] = [i for i in snap["invoices"] if i["client_email"].lower() == client_email.lower()]
+    world = ShadowWorld.from_snapshot(snap)
+    trace = Tracer(run_id, traces_dir / f"{run_id}.jsonl" if traces_dir else None, echo=False)
+    plan = rehearse(world, mandate or load_mandate(), drafter, run_id, trace)
+    trace("rehearsal_done", None, plan_summary(plan),
+          intents=[i.idempotency_key for i in plan.intents], refusals=[r.reason for r in plan.refusals])
+    _write_plan(state_dir, plan)
+    return plan
+
+
+def execute_for(client_email: str, run_id: str, state_dir: Path, *, traces_dir: Optional[Path] = None) -> Plan:
+    """Take the plan rehearse_for wrote and run the gated path: post to Slack, wait for the tap,
+    re-verify the live ledger, execute through the executor, assert end state. The tap cannot be
+    skipped. Refuses a plan whose intents belong to another client. Needs the live credentials."""
+    state_dir = Path(state_dir)
+    plan_path = state_dir / "plans" / f"{run_id}.json"
+    if not plan_path.exists():
+        raise FileNotFoundError(f"no rehearsed plan at {plan_path}; call rehearse_for first")
+    plan = plan_from_json(json.loads(plan_path.read_text()))
+    ledger, inbox, calendar, chat = _live_adapters(with_chat=True)
+    for iid in {i.invoice_id for i in plan.intents}:
+        owner = ledger.get(iid).client_email.lower()
+        if owner != client_email.lower():
+            raise ValueError(f"plan {run_id} has an intent for {iid}, whose client is {owner}, not {client_email}")
+    traces_dir = Path(traces_dir) if traces_dir else state_dir.parent / "traces"
+    trace = Tracer(run_id, traces_dir / f"{run_id}.jsonl", append=True)
+    return _gated(plan, ledger, inbox, calendar, chat, state_dir, traces_dir, trace, run_id)
+
+
+def _gated(plan: Plan, ledger: Ledger, inbox: Inbox, calendar: Optional[Calendar], chat: Chat,
+           state_dir: Path, traces_dir: Path, trace: Tracer, run_id: str) -> Plan:
+    """Post -> tap -> re-verify -> execute -> assert. Every live write inside is the executor's."""
     from owed.agent import asserter, executor  # the only live-write path
 
     # 6. Post the plan to Slack and wait for the tap.
@@ -284,6 +375,15 @@ def run(*, ledger: Ledger, inbox: Inbox, calendar: Optional[Calendar], chat: Cha
         iid, step = its[0].invoice_id, its[0].step
         planned = next((i.payload.get("amount") for i in its if i.kind == "send_email"), None)
         live = ledger.get(iid)
+        if any(i.payload.get("receipt") for i in its):
+            if live.paid:
+                trace("reverify", iid, f"REVERIFIED {iid} receipt: ledger still shows paid (${live.amount_total:,.2f})")
+                keep.extend(its)
+            else:
+                plan.refusals.append(Refusal(iid, 0, "verifier_amount", "no longer shows paid; receipt withheld"))
+                aborts.append(f"ABORTED: no longer shows paid -- {iid} receipt")
+                trace("abort", iid, f"ABORTED {iid} receipt: ledger no longer shows paid", reason="verifier_amount")
+            continue
         if live.paid or live.amount_due <= 0:
             detail = f"paid since rehearsal (${(planned or live.amount_total):,.2f} received)"
         elif planned is not None and abs(live.amount_due - float(planned)) > 0.005:
@@ -310,8 +410,11 @@ def run(*, ledger: Ledger, inbox: Inbox, calendar: Optional[Calendar], chat: Cha
         trace("execute", None, msg + f" -- keys left pending in {executor.sent_path(state_dir)}; check the apps before clearing")
         executor.post(chat, f"OWED result {run_id}: {msg}")
         raise
-    sent = sum(1 for i in plan.intents if i.kind == "send_email")
-    executor.post(chat, f"OWED result {run_id}: sent {sent}, aborted {len(aborts)}" + "".join(f"\n{a}" for a in aborts))
+    sent = sum(1 for i in plan.intents if i.kind == "send_email" and not i.payload.get("receipt"))
+    closed = [f"closed, ${i.payload.get('amount', 0):,.2f} received -- {i.invoice_id}"
+              for i in plan.intents if i.kind == "send_email" and i.payload.get("receipt")]
+    executor.post(chat, f"OWED result {run_id}: sent {sent}, closed {len(closed)}, aborted {len(aborts)}"
+                  + "".join(f"\n{c}" for c in closed) + "".join(f"\n{a}" for a in aborts))
     try:
         states = asserter.assert_end_state(plan, ledger, inbox, calendar, chat)
     except AssertionError as e:

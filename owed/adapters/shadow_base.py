@@ -23,11 +23,14 @@ class ShadowWrites:
         self._invoice_id, self._step, self._extra = invoice_id, step, dict(extra)
 
     def _intent(self, kind: str, payload: dict, invoice_id: Optional[str] = None) -> Intent:
+        merged = {**self._extra, **payload}
         it = Intent(
             kind=kind,  # type: ignore[arg-type]
             invoice_id=invoice_id or self._invoice_id,
             step=self._step,
-            payload={**self._extra, **payload},
+            payload=merged,
+            # a receipt is not a chase step: its own idempotency key, never colliding with step 0..3
+            idempotency_key=f"{invoice_id or self._invoice_id}:receipt" if merged.get("receipt") else "",
         )
         self.intents.append(it)
         self.writes.append({"op": kind, "invoice_id": it.invoice_id, "step": it.step})

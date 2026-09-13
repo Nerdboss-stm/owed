@@ -20,7 +20,8 @@ def assert_end_state(plan: Plan, ledger: Ledger, inbox: Inbox, calendar: Optiona
         iid = it.invoice_id
         if it.kind == "send_email":
             to = it.payload["to"]
-            states.append(EndState("gmail", 1, inbox.count_sent(to, iid), f"sent to {to} with {iid} in subject"))
+            needle = it.payload["subject"] if it.payload.get("receipt") else iid  # a receipt follows an earlier chase
+            states.append(EndState("gmail", 1, inbox.count_sent(to, needle), f"sent to {to} with {needle!r} in subject"))
         elif it.kind == "create_payment_link":
             states.append(EndState("stripe", 1, ledger.count_links(iid), f"active payment links for {iid}"))
         elif it.kind == "create_event":

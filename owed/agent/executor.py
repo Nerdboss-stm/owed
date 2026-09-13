@@ -98,7 +98,17 @@ def execute(plan: Plan, ledger: Ledger, inbox: Inbox, calendar: Optional[Calenda
                 results["event_id"] = ev
                 lines.append(_line(run_id, "execute", iid, f"CREATED calendar event {ev} for {iid} step {step}: {slot_text}", key=key))
         for it in intents:
-            if it.kind == "send_email":
+            if it.kind == "send_email" and it.payload.get("receipt"):
+                p = it.payload
+                mid = inbox.send(p["to"], p["subject"], p["body"], p.get("thread_id"))
+                results["message_id"] = mid
+                mark = getattr(ledger, "mark_receipted", None)
+                if callable(mark):
+                    mark(iid)
+                lines.append(_line(run_id, "execute", iid,
+                                   f"CLOSED {iid}: ${p.get('amount', 0):,.2f} received, receipt sent -> {p['to']} ({mid})",
+                                   key=key, message_id=mid, amount=p.get("amount"), closed=True))
+            elif it.kind == "send_email":
                 p = it.payload
                 body = p["body"].rstrip("\n")
                 if link_url:

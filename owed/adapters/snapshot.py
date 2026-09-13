@@ -31,6 +31,9 @@ def snapshot(ledger: Ledger, inbox: Inbox, calendar: Optional[Calendar], today: 
              n_slots: int = 6) -> dict:
     """Reads only. Finds each invoice's thread via metadata, else the latest mail from the client."""
     invoices = ledger.overdue(today)
+    closing = getattr(ledger, "paid_after_chase", None)
+    if callable(closing):
+        invoices += closing()  # paid after a chase, receipt not yet sent: the close-the-loop rows
     threads: dict[str, list[Message]] = {}
     for inv in invoices:
         if not inv.thread_id and hasattr(inbox, "latest_thread_id"):
@@ -46,6 +49,7 @@ def snapshot(ledger: Ledger, inbox: Inbox, calendar: Optional[Calendar], today: 
         "threads": {tid: [asdict(m) | {"ts": m.ts.isoformat()} for m in msgs] for tid, msgs in threads.items()},
         "free_slots": [s.isoformat() for s in free],
         "links": {i.invoice_id: [] for i in invoices},
+        "receipted": [],
         "posts": [],
         "tap": False,
     }
@@ -86,7 +90,7 @@ class ShadowWorld:
     def from_snapshot(cls, snap: dict) -> "ShadowWorld":
         intents: list[Intent] = []
         return cls(
-            ledger=ShadowLedger([_invoice(d) for d in snap["invoices"]], intents, snap.get("links")),
+            ledger=ShadowLedger([_invoice(d) for d in snap["invoices"]], intents, snap.get("links"), snap.get("receipted")),
             inbox=ShadowInbox({t: [_message(m) for m in ms] for t, ms in snap.get("threads", {}).items()}, intents),
             # scenarios/*.json spell the slots "calendar_slots"; live snapshots spell them "free_slots"
             calendar=ShadowCalendar([datetime.fromisoformat(s)

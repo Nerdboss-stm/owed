@@ -12,15 +12,20 @@ SHADOW_LINK = "https://shadow.local/pay/{invoice_id}"
 
 class ShadowLedger(ShadowWrites, Ledger):
     def __init__(self, invoices: list[Invoice], intents: Optional[list[Intent]] = None,
-                 links: Optional[dict[str, list[str]]] = None):
+                 links: Optional[dict[str, list[str]]] = None, receipted: Optional[list[str]] = None):
         super().__init__(intents)
         # A list, not a dict: the "duplicate invoice numbers" scenario needs both copies visible.
         self._inv: list[Invoice] = [replace(i) for i in invoices]
         self._links: dict[str, list[str]] = {k: list(v) for k, v in (links or {}).items()}
+        self._receipted: set[str] = set(receipted or [])
 
     # ---- reads ----
     def overdue(self, today: date) -> list[Invoice]:
         return [replace(i) for i in self._inv if not i.paid and i.due_date < today]
+
+    def paid_after_chase(self) -> list[Invoice]:
+        return [replace(i) for i in self._inv
+                if i.paid and i.last_chased_step > 0 and i.invoice_id not in self._receipted]
 
     def get(self, invoice_id: str) -> Invoice:
         for i in self._inv:
@@ -44,6 +49,10 @@ class ShadowLedger(ShadowWrites, Ledger):
             if i.invoice_id == invoice_id:
                 i.last_chased_step = step
         self.writes.append({"op": "mark_chased", "invoice_id": invoice_id, "step": step})
+
+    def mark_receipted(self, invoice_id: str) -> None:
+        self._receipted.add(invoice_id)
+        self.writes.append({"op": "mark_receipted", "invoice_id": invoice_id})
 
     # ---- scenario helpers (test setup, not agent behaviour) ----
     def mark_paid(self, invoice_id: str, amount: Optional[float] = None) -> None:

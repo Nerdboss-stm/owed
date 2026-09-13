@@ -85,6 +85,20 @@ def deterministic_checks(draft: dict, invoice: Invoice, mandate: dict) -> list[R
     return out
 
 
+def receipt_checks(draft: dict, invoice: Invoice, mandate: dict) -> list[Refusal]:
+    """A receipt states the amount received (the invoice total), never the zero balance. Same word rules."""
+    iid = invoice.invoice_id
+    text = f"{draft.get('subject', '')}\n{draft.get('body', '')}"
+    out: list[Refusal] = []
+    wrong = [a for a in _amounts(text) if abs(a - invoice.amount_total) > 0.005]
+    if wrong or abs(float(draft.get("amount", -1)) - invoice.amount_total) > 0.005:
+        out.append(Refusal(iid, 0, "verifier_amount", f"receipt states ${(wrong or [draft.get('amount')])[0]}; received ${invoice.amount_total:,.2f}"))
+    for pats, code in ((_DISCOUNT, "verifier_discount"), (_DEADLINE, "verifier_deadline"), (_TONE, "verifier_tone")):
+        if h := _hits(pats, text):
+            out.append(Refusal(iid, 0, code, f"receipt breaks the mandate ({h[0]!r})"))  # type: ignore[arg-type]
+    return out
+
+
 def verifier_system(mandate: dict) -> str:
     tone = ", ".join(mandate.get("tone", []))
     never = "; ".join(mandate.get("never", []))

@@ -78,6 +78,21 @@ def template_draft(invoice: Invoice, step: Step, mandate: dict) -> dict:
     return {"subject": subject, "body": body, "amount": invoice.amount_due, "step": step}
 
 
+def receipt_draft(invoice: Invoice, mandate: dict) -> dict:
+    """Close the loop: a short thank-you once a chased invoice is paid. Deterministic, no model call.
+    The figure is the invoice total (what was received), from the ledger."""
+    amt = f"${invoice.amount_total:,.2f}"
+    first = (invoice.client_name.split() or ["there"])[0]
+    iid, sign = invoice.invoice_id, mandate.get("signoff", "")
+    return {
+        "subject": f"Received: invoice {iid}",
+        "body": f"Hi {first},\n\nPayment of {amt} for invoice {iid} has come through. Thank you, all settled.\n\n{sign}\n",
+        "amount": invoice.amount_total,
+        "step": 0,
+        "receipt": True,
+    }
+
+
 def _facts(invoice: Invoice, step: Step, days: int) -> dict:
     first = (invoice.client_name.split() or ["there"])[0]
     return {

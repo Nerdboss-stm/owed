@@ -74,6 +74,17 @@ class StripeLedger(Ledger):
                 return self._to_invoice(inv)
         raise KeyError(f"invoice {invoice_id} not in Stripe")
 
+    def paid_after_chase(self) -> list[Invoice]:
+        """Paid invoices that were chased and have not been receipted: the close-the-loop candidates.
+        Not part of the contract ABC; callers use getattr and skip adapters without it."""
+        out = []
+        for inv in retry_read(lambda: list(
+                stripe.Invoice.list(limit=100, status="paid", expand=["data.customer"]).auto_paging_iter())):
+            meta = _meta(inv.metadata)
+            if int(meta.get("last_chased_step", 0)) > 0 and not meta.get("receipt_sent"):
+                out.append(self._to_invoice(inv))
+        return out
+
     def count_links(self, invoice_id: str) -> int:
         links = retry_read(lambda: list(stripe.PaymentLink.list(limit=100, active=True).auto_paging_iter()))
         return sum(1 for l in links if _meta(l.metadata).get("invoice_id") == invoice_id)
@@ -100,3 +111,8 @@ class StripeLedger(Ledger):
             self._ids[invoice_id],
             metadata={"last_chased_step": str(step), "last_chased_at": datetime.now(timezone.utc).isoformat()},
         )
+
+    def mark_receipted(self, invoice_id: str) -> None:
+        self.get(invoice_id)
+        live_write()
+        stripe.Invoice.modify(self._ids[invoice_id], metadata={"receipt_sent": datetime.now(timezone.utc).isoformat()})
