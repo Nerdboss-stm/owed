@@ -2,57 +2,89 @@
 
 OWED is an agent that collects overdue freelance invoices, and rehearses every email against a shadow inbox before it is allowed to send one.
 
-**Demo (2 min):** _link goes here_
+## 1. Project overview
 
-## Who it is for
+A freelancer is owed $3,400, 19 days overdue. She has drafted the chase email four times and sent none. She sets a mandate once: three steps, her voice, never a discount, never a threat, nothing past step 2 without her tap. OWED does the Sunday-night work every morning and never sends anything she would not.
 
-A freelancer owed $3,400, 19 days overdue, who has drafted the chase email four times and sent none. She sets a mandate once. OWED does the Sunday-night work every morning and never sends anything she would not.
+What the agent does, one run:
 
-## What it does
+1. Reads the ledger (Stripe) for overdue invoices: amount, days overdue, last chased.
+2. Reads the client thread (Gmail) and classifies the last reply: none, says paid, disputes, asks for docs, promises a date, injection.
+3. Decides the step per invoice from days overdue and thread state. Thread state wins: "sent Friday" means verify, not chase.
+4. Rehearses the whole plan against a shadow copy of ledger and inbox. Zero live writes.
+5. A second model, the verifier, checks every draft against the mandate. Deterministic checks run first. Any fail is a refusal.
+6. Posts the plan to Slack: what it will send, what it refused, why. Waits for the ✅.
+7. Re-reads the live ledger after the tap. Paid since rehearsal means aborted.
+8. Executes with idempotency keys, one per (invoice, step), then asserts end state in every app.
 
-1. Reads the ledger (Stripe) for overdue invoices.
-2. Reads the client thread (Gmail) and classifies the last reply.
-3. Decides the escalation step from days overdue and thread state.
-4. Rehearses the whole plan against a shadow copy of ledger and inbox. No live writes.
-5. A separate verifier model checks every draft against the mandate. Failures become refusals.
-6. Posts the plan to Slack: what it will send, what it refused, why. Waits for ✅.
-7. Re-checks live state after the tap. Paid since rehearsal → aborted.
-8. Executes with idempotency keys, then asserts end state in every app.
+Rehearse in a sandbox, execute behind a gate. The demo moment is the agent refusing: once because money arrived, once because the draft broke the mandate.
 
-## External apps
+- Rehearsal Room, judges run any scenario, shadow only, no credentials on Vercel: https://rehearsal-room-ui-e89f5f.vercel.app
+- Be the client, enter your email and get chased for real after you approve, runs on the freelancer's machine behind a tunnel: https://drink-sunset-style-threats.trycloudflare.com
+
+## 2. External apps used
 
 | App | Role | Write performed |
 |---|---|---|
-| Stripe (test mode) | Ledger | payment link, chased metadata |
-| Gmail | Client thread, chase email | send |
-| Google Calendar | Step-3 call | event |
-| Slack | Rehearsal report, approval | message, reaction read |
+| Stripe (test mode) | Ledger, source of truth for owed and paid | create payment link, mark invoice chased (metadata), mark paid out of band when the link settles |
+| Gmail | Client thread in, chase email out | send email, as a reply in the client thread |
+| Google Calendar | Step-3 call | create event with the client as attendee |
+| Slack | Rehearsal report and approval tap | post message, read ✅ reaction |
 
-## How to run
+All data is seeded test data. Stripe is in test mode. Gmail, Calendar, and Slack are test accounts. The Vercel deployment holds none of these credentials; only the freelancer's machine executes, and only after the tap.
 
-No credentials needed for this one. It loads a scenario into the shadow adapters, plans, drafts (template), verifies, and prints what it would send and what it refused. Zero network, zero live writes.
+## 3. Setup instructions
+
+### Offline, no credentials (what a judge runs first)
+
+Loads a scenario into the shadow adapters, plans, drafts (template), verifies, and prints what it would send and what it refused. Zero network, zero live writes.
 
 ```
 pip install -r requirements.txt
 python run.py --scenario 01_clean_day12 --rehearse-only --offline
 ```
 
-Any of the ten `scenarios/*.json` works in place of `01_clean_day12`. The trace lands in `traces/<run_id>.jsonl`, the plan in `state/plans/<run_id>.json`.
+Any of the ten `scenarios/*.json` works in place of `01_clean_day12`. The trace lands in `traces/<run_id>.jsonl`, the plan in `state/plans/<run_id>.json`. `python -m pytest -q tests` runs the seven acceptance tests against in-memory stubs, no network.
 
-With credentials:
+### Full live setup
+
+1. `cp .env.example .env` and fill in:
+
+   | Variable | What |
+   |---|---|
+   | `ANTHROPIC_API_KEY` | actor, verifier, and classifier model calls |
+   | `STRIPE_TEST_KEY` | a test-mode secret key (`sk_test_...`); a restricted key needs Invoices, Prices, Products, and Payment Links write |
+   | `GOOGLE_CREDENTIALS_JSON` | path to an OAuth desktop-app client file from Google Cloud Console |
+   | `GOOGLE_TOKEN_JSON` | where the cached token goes, default `./token.json` |
+   | `SLACK_BOT_TOKEN`, `SLACK_CHANNEL` | bot token and the channel id the plan is posted to |
+   | `FREELANCER_EMAIL` | the Gmail account that sends |
+   | `TODAY` | optional ISO date so runs are reproducible |
+
+2. Google consent, once: the first live command opens a browser for the Gmail and Calendar scopes (`gmail.send`, `gmail.readonly`, `calendar.events`) and caches `token.json`. Both files are gitignored.
+3. Slack app: a bot with `chat:write`, `reactions:read`, `channels:history`, invited to the channel. The tap is a ✅ reaction by a human on the plan message; the bot's own reactions do not count.
+4. Seed and run:
 
 ```
-cp .env.example .env        # STRIPE_TEST_KEY, GOOGLE_CREDENTIALS_JSON, SLACK_BOT_TOKEN, SLACK_CHANNEL, ANTHROPIC_API_KEY
-python run.py --scenario 01_clean_day12   # same rehearsal, real actor + verifier models
-python run.py --live                      # one full run against the seeded test apps, waits for the Slack tap
-python evals/run_evals.py                 # all scenarios, regenerates the table below
+python scripts/seed_stripe.py                 # INV-0042, $3,400, 19 days overdue, idempotent
+python run.py --live --rehearse-only          # snapshot the real apps, rehearse, send nothing
+python run.py --live                          # full loop, waits for the Slack tap
+python evals/run_evals.py                     # all ten scenarios, rewrites the table below
 ```
 
-All data is seeded test data. Stripe is in test mode. Gmail and Slack are test accounts.
+### Client backend and tunnel (Be the client)
 
-## Reliability
+Runs on the freelancer's machine, never on Vercel. A judge enters an email, OWED seeds a test invoice for it, rehearses, posts the plan, and sends the real chase email only after they press Approve. Approve is the tap, through a file-based Chat adapter; every live write still goes through the executor.
 
-Ten seeded scenarios, each asserting end state in the apps, not just agent output.
+```
+python ui/client_server.py                       # http://localhost:8766
+cloudflared tunnel --url http://localhost:8766   # public URL; paste into public/client.json and redeploy
+```
+
+The Rehearsal Room reads `public/client.json` for the current tunnel URL. Quick tunnels change on every restart.
+
+## 4. Reliability testing
+
+Ten seeded scenarios, each asserting end state in the apps (stub adapters that count writes), not just agent output. Rerun with `python evals/run_evals.py`.
 
 <!-- EVALS:START -->
 | Scenario | Expected | Actual | End state checked | Pass |
@@ -71,28 +103,34 @@ Ten seeded scenarios, each asserting end state in the apps, not just agent outpu
 _Last eval run 2026-09-13 15:14 (online drafts): 10/10 pass._
 <!-- EVALS:END -->
 
-Full trace of one real run, tap to send, end state asserted: [traces/live-clean-2.jsonl](traces/live-clean-2.jsonl). Run again a minute later and it refuses with `already_sent`.
+Seven acceptance tests in `tests/`, all green offline:
 
-## Live runs today (real apps, test accounts)
+- `test_ac1_shadow_no_side_effects`: a rehearsal produces zero live writes.
+- `test_ac2_exactly_once`: running twice on the same ledger sends exactly one email per (invoice, step).
+- `test_ac3_abort_on_paid`: paid between rehearsal and execute aborts, Slack says "ABORTED: paid".
+- `test_ac4_injection_ignored`: instruction-like text in a client email means ledger unchanged, refusal `injection`.
+- `test_ac5_verifier_blocks_discount`: a draft offering a discount is refused before any tap.
+- `test_ac6_step3_requires_tap`: a step-3 intent never executes without the ✅.
+- `test_ac7_end_state_assert`: after execute the asserter finds the exact counts in each app and raises otherwise.
 
-Five runs against Stripe test mode, a Gmail test inbox, Google Calendar, and a Slack test channel. Each trace is the file the run wrote, unedited.
+Live runs today, real apps, test accounts. Each trace is the file the run wrote, unedited.
 
-- [live-clean-1](traces/live-clean-1.jsonl): the fail-closed example. Plan posted, tap received, live ledger re-verified. The executor recorded `INV-0042:2` as pending in `state/sent.json`, then the first live write (the Stripe price for the payment link) was refused because the key was a restricted key without write permission. The run raised and stopped. Reads afterwards confirmed zero payment links, zero emails, ledger unchased, so the pending key was cleared by hand. No refusal reason, no send.
-- [live-clean-2](traces/live-clean-2.jsonl): the clean send. Same invoice, secret key. Tap received, re-verified, payment link created, one email sent as a reply in the client thread, ledger marked chased step 2, end state asserted 1/1 in Stripe, Gmail, and Slack. No refusal.
-- [live-clean-3](traces/live-clean-3.jsonl): the same run one minute later. Refused at rehearsal with `already_sent` (step 2 already chased, step 3 due at day 21). Plan posted with zero intents, nothing sent.
-- [live-paid-1](traces/live-paid-1.jsonl): money arrived between rehearsal and send. INV-0043 ($2,150, 12 days overdue) planned for step 2, plan posted, invoice marked paid in Stripe during the tap wait, tap received, live ledger re-read. Aborted with reason `paid`: "ABORTED INV-0043 step 2: paid since rehearsal ($2,150.00 received)". Nothing sent.
-- [live-inject-1](traces/live-inject-1.jsonl): the client email for INV-0044 ($1,800, 15 days overdue) contained an instruction aimed at the agent. The deterministic gate classified the thread as `injection` before any model call. Refused at rehearsal with reason `injection`, plan posted with zero intents, ledger read back unchanged.
+- [live-clean-1](traces/live-clean-1.jsonl), the fail-closed incident: plan posted, tap received, ledger re-verified, key `INV-0042:2` recorded as pending, then the first live write was refused because the Stripe key was a restricted key without write permission. The run raised and stopped. Reads confirmed zero links, zero emails, ledger unchased; the pending key was cleared by hand. Nothing sent.
+- [live-clean-2](traces/live-clean-2.jsonl), the clean send: tap, re-verify, payment link, one email as a reply in the thread, ledger marked chased step 2, end state 1/1 in Stripe, Gmail, Slack.
+- [live-clean-3](traces/live-clean-3.jsonl), the same run a minute later: refused at rehearsal with `already_sent`, nothing sent.
+- [live-paid-1](traces/live-paid-1.jsonl), money arrived in the tap window: INV-0043 marked paid in Stripe after the plan was posted; after the tap the live ledger was re-read and the run aborted, "ABORTED INV-0043 step 2: paid since rehearsal ($2,150.00 received)". Nothing sent.
+- [live-inject-1](traces/live-inject-1.jsonl), a client email with an instruction aimed at the agent: classified `injection` by the deterministic gate before any model call, refused at rehearsal, ledger read back unchanged.
 
 **What still fails or is not proven:**
 
-- The thread classifier needs a model call for ambiguous client replies. The deterministic rules cover says-paid, dispute, injection, document requests, and dated promises; anything else goes to the model, and offline it becomes `other`, which chases. A vague reply like "will get this sorted this week" was labeled `promises_date` by the model in one live read and `other` in another.
-- Step 3 (calendar event plus call proposal, tap required) passes the eval harness and AC6/AC7 against stub adapters. It was not exercised live today; no invoice reached day 21.
-- The Vercel Blob push after assert is written and skipped without `BLOB_READ_WRITE_TOKEN`. The token was not set on this machine, so the upload path has not run against Blob.
-- Astra was not available, so actor and verifier are both Claude in different roles rather than two vendors.
+- The classifier needs a model call for ambiguous replies. Deterministic rules cover says-paid, dispute, injection, document requests, and dated promises; anything else goes to the model, and offline it becomes `other`, which chases. "Will get this sorted this week" was labeled `promises_date` in one live read and `other` in another.
+- Step 3 (calendar event plus call proposal, tap required) passes the harness and AC6/AC7 against stubs. It has not been exercised live.
+- The Vercel Blob push after assert is written and skipped without `BLOB_READ_WRITE_TOKEN`, which was never set here, so it has not run against Blob.
+- Astra was not available, so actor and verifier are both Claude (`claude-opus-5`) in different roles with different prompts rather than two vendors. The verifier never sees the actor's prompt or the voice samples.
 
-## Models
+## 5. Demo video
 
-Actor drafts the email. Verifier checks it. They are different model calls with different system prompts and never share a prompt; the verifier never sees the voice samples or the actor's instructions. Both are `claude-opus-5` today. The actor receives ledger facts only, never client email text. The classifier is one constrained call that runs only when the deterministic rules do not match.
+**Demo (2 min):** _link goes here_ · Rehearsal Room: https://rehearsal-room-ui-e89f5f.vercel.app
 
 ## Built today
 
