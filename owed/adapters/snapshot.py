@@ -86,7 +86,9 @@ class ShadowWorld:
         return cls(
             ledger=ShadowLedger([_invoice(d) for d in snap["invoices"]], intents, snap.get("links")),
             inbox=ShadowInbox({t: [_message(m) for m in ms] for t, ms in snap.get("threads", {}).items()}, intents),
-            calendar=ShadowCalendar([datetime.fromisoformat(s) for s in snap.get("free_slots", [])], intents),
+            # scenarios/*.json spell the slots "calendar_slots"; live snapshots spell them "free_slots"
+            calendar=ShadowCalendar([datetime.fromisoformat(s)
+                                     for s in (snap.get("free_slots") or snap.get("calendar_slots") or [])], intents),
             chat=ShadowChat(snap.get("posts"), bool(snap.get("tap", False)), intents),
             intents=intents,
             today=date.fromisoformat(snap["today"]),
