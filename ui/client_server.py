@@ -298,6 +298,194 @@ def status(email: str):
     }, headers={"Cache-Control": "no-store"})
 
 
+# ---------- the freelancer's desk: the whole ledger, web tap + Slack #owed, mandate edits ----------
+
+DESK = STATE_ROOT / "desk"
+MANDATE_PATH = ROOT / "owed" / "mandate" / "mandate.yaml"
+MANDATE_HEADER = ("# The mandate. Set once by the freelancer, edited from the desk. Read by planner (day thresholds),\n"
+                  "# drafter (voice, tone, never-list) and verifier (never-list, tone).\n")
+_calendar = None
+_slack = None
+
+
+def calendar():
+    global _calendar
+    if _calendar is None:
+        from owed.adapters.calendar_live import GoogleCalendar
+        _calendar = GoogleCalendar()
+    return _calendar
+
+
+def slack():
+    global _slack
+    if _slack is None:
+        from owed.adapters.chat_live import SlackChat
+        _slack = SlackChat()
+    return _slack
+
+
+def _desk_chat(run_id: str):
+    """The web Approve is the tap; every post also lands in Slack #owed."""
+    from owed.adapters.chat_fanout import FanoutChat
+    return FanoutChat(WebTapChat(DESK / "posts.jsonl", DESK / "approve.json", run_id), slack())
+
+
+def _mandate_summary(m: dict) -> str:
+    days = "/".join(str((m.get(f"step_{s}") or {}).get("day", "?")) for s in (1, 2, 3))
+    tap = "step 3 needs the tap" if (m.get("step_3") or {}).get("requires_tap") else "no step needs the tap"
+    return (f"{m.get('steps', 3)} steps at day {days} · tone: {', '.join(m.get('tone', []))} · "
+            f"never: {', '.join(m.get('never', []))} · {tap} · signs {m.get('signoff', '')}")
+
+
+class MandateBody(BaseModel):
+    signoff: Optional[str] = None
+    tone: Optional[list[str]] = None
+    never: Optional[list[str]] = None
+    step_1_day: Optional[int] = None
+    step_2_day: Optional[int] = None
+    step_3_day: Optional[int] = None
+
+
+class RunBody(BaseModel):
+    run_id: str
+
+
+@app.get("/freelancer/overdue")
+def overdue():
+    """Live snapshot of the Stripe ledger. Reads only."""
+    today = today_fn()
+    rows = []
+    for i in ledger().overdue(today):
+        rows.append({"invoice_id": i.invoice_id, "client_name": i.client_name, "client_email": i.client_email,
+                     "amount_due": i.amount_due, "amount_total": i.amount_total, "due_date": i.due_date.isoformat(),
+                     "days_overdue": i.days_overdue(today), "last_chased_step": i.last_chased_step})
+    rows.sort(key=lambda r: (-r["days_overdue"], r["invoice_id"]))
+    return JSONResponse({"today": today.isoformat(), "count": len(rows), "total_due": round(sum(r["amount_due"] for r in rows), 2),
+                         "invoices": rows}, headers={"Cache-Control": "no-store"})
+
+
+@app.get("/freelancer/mandate")
+def get_mandate():
+    from owed.run import load_mandate
+    m = load_mandate()
+    return {"mandate": m, "summary": _mandate_summary(m)}
+
+
+@app.post("/freelancer/mandate")
+def set_mandate(body: MandateBody):
+    """Edits owed/mandate/mandate.yaml in place. Validated at the boundary; the file is rewritten whole."""
+    import yaml
+    m = yaml.safe_load(MANDATE_PATH.read_text())
+    if not isinstance(m, dict):
+        raise HTTPException(500, "mandate.yaml is not a mapping")
+
+    def clean_list(name: str, items: list[str]) -> list[str]:
+        out = [s.strip() for s in items if isinstance(s, str) and s.strip()]
+        if not out or len(out) > 8 or any(len(s) > 80 for s in out):
+            raise HTTPException(400, f"{name}: 1 to 8 entries of at most 80 characters")
+        return out
+
+    if body.signoff is not None:
+        s = body.signoff.strip()
+        if not s or len(s) > 40:
+            raise HTTPException(400, "signoff: 1 to 40 characters")
+        m["signoff"] = s
+    if body.tone is not None:
+        m["tone"] = clean_list("tone", body.tone)
+    if body.never is not None:
+        m["never"] = clean_list("never", body.never)
+    days = {s: (m.get(f"step_{s}") or {}).get("day") for s in (1, 2, 3)}
+    for s in (1, 2, 3):
+        v = getattr(body, f"step_{s}_day")
+        if v is not None:
+            if not 1 <= v <= 90:
+                raise HTTPException(400, f"step_{s}_day: 1 to 90")
+            days[s] = v
+    if not (days[1] < days[2] < days[3]):
+        raise HTTPException(400, f"step days must increase: {days[1]} < {days[2]} < {days[3]}")
+    for s in (1, 2, 3):
+        m[f"step_{s}"] = dict(m.get(f"step_{s}") or {}, day=days[s])
+    m["step_3"]["requires_tap"] = True  # SPEC: nothing past step 2 sends without the tap
+    MANDATE_PATH.write_text(MANDATE_HEADER + yaml.safe_dump(m, sort_keys=False, allow_unicode=True))
+    return {"mandate": m, "summary": _mandate_summary(m)}
+
+
+def _rehearse_desk_in_background(run_id: str) -> None:
+    from owed.run import ALL_CLIENTS
+    try:
+        plan, ts = rehearse_for(ALL_CLIENTS, DESK, ledger=ledger(), inbox=inbox(), calendar=calendar(),
+                                today=today_fn(), chat=_desk_chat(run_id), run_id=run_id)
+        _set_meta(DESK, run_id, phase="rehearsed", plan_ts=ts, summary=plan_summary(plan))
+    except Exception as e:  # noqa: BLE001 - surfaced in the panel
+        traceback.print_exc()
+        _set_meta(DESK, run_id, phase="failed", error=f"{type(e).__name__}: {str(e)[:300]}")
+    finally:
+        RUN_LOCK.release()
+
+
+@app.post("/freelancer/rehearse")
+def desk_rehearse():
+    """Rehearse the whole ledger with the live actor and verifier. Runs in the background (a full ledger
+    can take minutes); poll /freelancer/status until phase is rehearsed."""
+    if not RUN_LOCK.acquire(timeout=1):
+        raise HTTPException(409, "a run is in progress; try again in a moment")
+    run_id = f"desk-{datetime.now().strftime('%H%M%S')}"
+    DESK.mkdir(parents=True, exist_ok=True)
+    _set_meta(DESK, run_id, phase="rehearsing", started_at=datetime.now(timezone.utc).isoformat())
+    (DESK / "latest.json").write_text(json.dumps({"run_id": run_id}))
+    threading.Thread(target=_rehearse_desk_in_background, args=(run_id,), daemon=True).start()
+    return {"run_id": run_id, "phase": "rehearsing"}
+
+
+def _execute_desk_in_background(run_id: str, meta: dict) -> None:
+    from owed.run import ALL_CLIENTS
+    with RUN_LOCK:
+        try:
+            plan = execute_for(ALL_CLIENTS, run_id, DESK, ledger=ledger(), inbox=inbox(), calendar=calendar(),
+                               chat=_desk_chat(run_id), plan_ts=meta.get("plan_ts", ""))
+            _set_meta(DESK, run_id, phase="executed", summary=plan_summary(plan),
+                      finished_at=datetime.now(timezone.utc).isoformat())
+        except Exception as e:  # noqa: BLE001
+            traceback.print_exc()
+            _set_meta(DESK, run_id, phase="failed", error=f"{type(e).__name__}: {str(e)[:300]}")
+
+
+@app.post("/freelancer/approve")
+def desk_approve(body: RunBody):
+    run_id = body.run_id.strip()
+    if not re.match(r"^desk-\d{6}$", run_id):
+        raise HTTPException(400, "run_id must be the value returned by /freelancer/rehearse")
+    meta = _read(_meta_path(DESK, run_id))
+    if not meta:
+        raise HTTPException(404, f"no desk run {run_id}")
+    if meta.get("phase") != "rehearsed":
+        raise HTTPException(409, f"run {run_id} is {meta.get('phase')}, not rehearsed")
+    (DESK / "approve.json").write_text(json.dumps({"run_id": run_id, "via": "web",
+                                                  "approved_at": datetime.now(timezone.utc).isoformat()}, indent=2))
+    meta = _set_meta(DESK, run_id, phase="executing", approved_at=datetime.now(timezone.utc).isoformat())
+    threading.Thread(target=_execute_desk_in_background, args=(run_id, meta), daemon=True).start()
+    return {"approved": True, "run_id": run_id, "phase": "executing"}
+
+
+@app.get("/freelancer/status")
+def desk_status():
+    from owed.run import load_mandate
+    m = load_mandate()
+    meta = _latest(DESK) if DESK.exists() else None
+    if not meta:
+        return JSONResponse({"phase": "none", "run_id": None, "mandate_summary": _mandate_summary(m)},
+                            headers={"Cache-Control": "no-store"})
+    run_id = meta["run_id"]
+    plan = _read(DESK / "plans" / f"{run_id}.json") or {}
+    posts = WebTapChat(DESK / "posts.jsonl", DESK / "approve.json", run_id).posts()
+    return JSONResponse({
+        "run_id": run_id, "phase": meta.get("phase"), "error": meta.get("error"), "summary": meta.get("summary"),
+        "started_at": meta.get("started_at"), "approved_at": meta.get("approved_at"), "finished_at": meta.get("finished_at"),
+        "plan": plan, "end_state": plan.get("end_state"), "trace": _trace_lines(DESK, run_id), "posts": posts[-4:],
+        "mandate_summary": _mandate_summary(m),
+    }, headers={"Cache-Control": "no-store"})
+
+
 if __name__ == "__main__":
     import uvicorn
     port = int(sys.argv[1]) if len(sys.argv) > 1 else 8766

@@ -6,7 +6,7 @@
 <title>OWED · Priya's desk</title>
 <link rel="stylesheet" href="/owed.css">
 <style>
-  .top { display: flex; justify-content: space-between; align-items: flex-start; gap: 24px; margin-bottom: 28px; }
+  .top { display: flex; justify-content: space-between; align-items: center; gap: 24px; margin-bottom: 28px; }
   .grid { display: grid; grid-template-columns: 1fr 340px; gap: 20px; align-items: start; }
   .stack { display: flex; flex-direction: column; gap: 20px; }
   .item { padding: 12px 0; border-bottom: 1px solid #161e29; font-size: 17px; line-height: 1.45; }
@@ -15,18 +15,24 @@
   .approve { display: flex; align-items: center; gap: 16px; padding: 16px 20px; border-top: 1px solid #1f2a37; }
   .src { color: #8b98a8; font-size: 13px; text-transform: none; letter-spacing: 0; font-weight: 400; }
   #overdue td:first-child { font-weight: 600; }
+  .mandate { display: flex; gap: 14px; align-items: baseline; padding: 14px 20px; border-top: 1px solid #1f2a37; font-size: 15px; color: #b7c2cf; }
+  .mandate a { font-size: 14px; white-space: nowrap; }
+  .mform { padding: 4px 20px 18px; display: grid; grid-template-columns: 1fr 1fr; gap: 12px 16px; font-size: 14px; color: #8b98a8; }
+  .mform label { display: flex; flex-direction: column; gap: 4px; }
+  .mform input { background: #0a0e14; border: 1px solid #2a3644; border-radius: 8px; padding: 8px 10px; color: #e6edf3; font-size: 15px; font-family: inherit; }
+  .mform .full { grid-column: 1 / -1; }
+  .offline { color: #d29922; font-size: 16px; margin-bottom: 20px; }
 </style>
 </head>
 <body>
 <div class="wrap">
-  <div class="brand"><b>OWED</b><a href="/">← home</a><a href="/client">be the client</a></div>
+  <div class="brand"><b>OWED</b><a href="/">← home</a><a href="/scenarios">scenarios</a><a href="/client">be the client</a></div>
 
   <div class="top">
     <p class="lead" style="margin:0">Priya's desk: this is what the agent wants to send today, and what it refused.</p>
-    <label class="row small mute" style="flex-wrap:nowrap">Try a scenario
-      <select id="scenario" class="select" style="min-width:280px"></select>
-    </label>
+    <button id="rehearse" class="btn btn-go btn-lg"><span id="rehSpin" class="spin hidden"></span> Rehearse today</button>
   </div>
+  <div id="offline" class="offline hidden">the agent runtime is offline</div>
 
   <div class="grid">
     <div class="stack">
@@ -35,7 +41,7 @@
         <div class="body">
           <table id="overdue">
             <thead><tr><th>Client</th><th class="num">Amount</th><th class="num">Days overdue</th><th class="num">Last step</th></tr></thead>
-            <tbody><tr><td colspan="4" class="mute">loading…</td></tr></tbody>
+            <tbody><tr><td colspan="4" class="mute">loading the ledger…</td></tr></tbody>
           </table>
         </div>
       </section>
@@ -44,26 +50,34 @@
         <h2>Today's rehearsal <span id="rehSrc" class="src"></span></h2>
         <div class="body">
           <div class="mute small" style="margin-bottom:6px">WILL SEND <span id="sendN" class="mono"></span></div>
-          <div id="sends"></div>
+          <div id="sends"><div class="item mute">press Rehearse today</div></div>
           <div class="mute small" style="margin:18px 0 6px">REFUSED <span id="refN" class="mono"></span></div>
           <div id="refs"></div>
         </div>
         <div class="approve">
-          <button id="approve" class="btn btn-ok" disabled title="approval happens on the freelancer's machine">Approve ✅</button>
-          <span id="approveNote" class="mute small">approval happens on the freelancer's machine</span>
+          <button id="approve" class="btn btn-ok" disabled>Approve ✅</button>
+          <span id="approveNote" class="mute small">the tap: re-verifies the ledger, then executes with idempotency keys; the plan and the result also post to Slack #owed</span>
         </div>
+        <div class="mandate"><span id="mandateLine" class="grow">mandate…</span><a href="#" id="mandateEdit">Edit</a></div>
+        <form id="mform" class="mform hidden">
+          <label>signoff <input name="signoff"></label>
+          <label>step days (soft nudge / direct ask / propose a call) <span class="row" style="gap:8px"><input name="d1" type="number" min="1" max="90" style="width:80px"><input name="d2" type="number" min="1" max="90" style="width:80px"><input name="d3" type="number" min="1" max="90" style="width:80px"></span></label>
+          <label class="full">tone, comma separated <input name="tone"></label>
+          <label class="full">never, comma separated <input name="never"></label>
+          <div class="full row"><button type="submit" class="btn btn-go" style="padding:8px 16px;font-size:15px">Save mandate</button><a href="#" id="mandateCancel" class="small">cancel</a><span id="mmsg" class="small"></span></div>
+        </form>
       </section>
     </div>
 
     <div class="stack">
       <section class="card">
-        <details>
+        <details id="endDetails">
           <summary>End state <span id="endN" class="mono"></span></summary>
-          <div class="body" id="endstate"><div class="mute small">not asserted in this plan</div></div>
+          <div class="body" id="endstate"><div class="mute small">asserted per app after execute</div></div>
         </details>
-        <details>
+        <details id="traceDetails">
           <summary>Trace <span id="traceN" class="mono"></span></summary>
-          <div class="body log" id="trace" style="max-height:520px;overflow:auto"></div>
+          <div class="body log" id="trace" style="max-height:560px;overflow:auto"></div>
         </details>
       </section>
     </div>
@@ -75,39 +89,37 @@
   const $ = (id) => document.getElementById(id);
   const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const money = (n) => (n == null || n === '') ? '' : '$' + Number(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
-  const APP = { stripe: 'Stripe', gmail: 'Gmail', calendar: 'Calendar', slack: 'Slack', ledger_json: 'ledger.json' };
-  let lastRun = null;
+  const APP = { stripe: 'Stripe', gmail: 'Gmail', calendar: 'Calendar', slack: 'Slack' };
+  let base = '', status = null, timer = null, busy = false, openedOnce = false;
 
-  async function getJSON(url) {
-    const r = await fetch(url, { cache: 'no-store' });
+  async function resolveBase() {
+    try { const r = await fetch('/client.json', { cache: 'no-store' }); if (r.ok) { const d = await r.json(); if (d.url) base = d.url.replace(/\/$/, ''); } } catch (e) {}
+  }
+  async function api(method, path, body) {
+    const r = await fetch(base + path, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined, cache: 'no-store' });
     const d = await r.json().catch(() => ({}));
-    if (!r.ok) throw new Error(d.error || (r.status + ' ' + r.statusText));
+    if (!r.ok) throw new Error(d.detail || (r.status + ' ' + r.statusText));
     return d;
   }
+  function offline(on, msg) { $('offline').classList.toggle('hidden', !on); if (on) $('offline').textContent = 'the agent runtime is offline' + (msg ? ` (${msg})` : ''); }
 
-  // ---------- overdue rows: plan.invoices when the plan has them, else the trace's read_ledger line ----------
-  function overdueRows(plan, trace) {
-    if (Array.isArray(plan.invoices) && plan.invoices.length) {
-      return plan.invoices.map(i => ({
-        client: i.client_name || i.client_email || i.invoice_id, id: i.invoice_id, amount: i.amount_due,
-        days: i.days_overdue, last: i.last_chased_step ?? 0 }));
+  // ---------- overdue (live ledger) ----------
+  async function loadOverdue() {
+    try {
+      const d = await api('GET', '/freelancer/overdue');
+      $('overdueSrc').textContent = `live Stripe ledger · ${d.count} open · ${money(d.total_due)} due · as of ${d.today}`;
+      $('overdue').querySelector('tbody').innerHTML = d.invoices.length ? d.invoices.map(r => `
+        <tr><td>${esc(r.client_name || r.client_email)} <span class="mute mono small">${esc(r.invoice_id)}</span></td>
+            <td class="num mono">${esc(money(r.amount_due))}${r.amount_due !== r.amount_total ? ` <span class="mute small">of ${esc(money(r.amount_total))}</span>` : ''}</td>
+            <td class="num mono">${esc(r.days_overdue)}</td><td class="num mono">${esc(r.last_chased_step)}</td></tr>`).join('')
+        : `<tr><td colspan="4" class="mute">nothing overdue</td></tr>`;
+      try { localStorage.setItem('owed.desk.overdue', JSON.stringify(d)); } catch (e) {}
+      offline(false);
+    } catch (e) {
+      offline(true, /Failed to fetch|NetworkError|Load failed/.test(e.message) ? '' : e.message);
+      let c = null; try { c = JSON.parse(localStorage.getItem('owed.desk.overdue') || 'null'); } catch (x) {}
+      if (c) { $('overdueSrc').textContent = `last cached ledger · as of ${c.today}`; }
     }
-    const rl = (trace || []).find(t => t.phase === 'read_ledger' && t.data && Array.isArray(t.data.invoices));
-    if (!rl) return [];
-    return rl.data.invoices.map(i => {
-      const sent = (plan.intents || []).find(x => x.invoice_id === i.invoice_id && x.kind === 'send_email');
-      const dec = (trace || []).find(t => t.phase === 'decide' && t.invoice_id === i.invoice_id && t.data && t.data.step != null);
-      return { client: sent ? sent.payload.to : i.invoice_id, id: i.invoice_id, amount: i.amount_due, days: i.days,
-               last: dec ? Math.max(0, dec.data.step - 1) : '' };
-    });
-  }
-
-  function renderOverdue(rows, src) {
-    $('overdueSrc').textContent = src;
-    $('overdue').querySelector('tbody').innerHTML = rows.length ? rows.map(r => `
-      <tr><td>${esc(r.client)} <span class="mute mono small">${esc(r.id)}</span></td>
-          <td class="num mono">${esc(money(r.amount))}</td><td class="num mono">${esc(r.days)}</td><td class="num mono">${esc(r.last)}</td></tr>`).join('')
-      : `<tr><td colspan="4" class="mute">nothing overdue</td></tr>`;
   }
 
   // ---------- rehearsal ----------
@@ -115,81 +127,104 @@
     const p = it.payload || {};
     const extras = all.filter(x => x.idempotency_key === it.idempotency_key && x.kind !== 'send_email')
       .map(x => x.kind === 'create_payment_link' ? '+ payment link' : x.kind === 'create_event' ? '+ calendar event' : x.kind === 'post_chat' ? '+ slack post' : '').filter(Boolean).join(' ');
-    return `<div class="item"><span class="send">WILL SEND</span> ${esc(it.invoice_id)} step ${esc(it.step)} → ${esc(p.to)} <span class="why">“${esc(p.subject)}”</span> <span class="mono">${esc(money(p.amount))}</span> <span class="mute">${esc(extras)}</span>${it.requires_tap ? ' <span class="chip chip-warn">needs tap</span>' : ''}</div>`;
+    const kind = p.receipt ? 'WILL SEND receipt' : 'WILL SEND';
+    return `<div class="item"><span class="send">${kind}</span> ${esc(it.invoice_id)} step ${esc(it.step)} → ${esc(p.to)} <span class="why">“${esc(p.subject)}”</span> <span class="mono">${esc(money(p.amount))}</span> <span class="mute">${esc(extras)}</span>${it.requires_tap ? ' <span class="chip chip-warn">needs tap</span>' : ''}</div>`;
   }
 
-  function renderPlan(plan, src) {
-    const intents = plan.intents || [], refusals = plan.refusals || [];
+  function renderPlan(s) {
+    const plan = s.plan || {}, intents = plan.intents || [], refusals = plan.refusals || [];
     const sends = intents.filter(i => i.kind === 'send_email');
-    const others = intents.filter(i => !sends.some(s => s.idempotency_key === i.idempotency_key));
-    $('rehSrc').textContent = src;
-    $('sendN').textContent = sends.length + others.length;
-    $('refN').textContent = refusals.length;
-    $('sends').innerHTML = (sends.map(s => sendLine(s, intents)).join('') +
-      others.map(o => `<div class="item"><span class="send">WILL DO</span> ${esc(o.kind)} ${esc(o.invoice_id)} step ${esc(o.step)} <span class="why">${esc(o.payload?.text || '')}</span></div>`).join(''))
-      || `<div class="item mute">nothing: no email, no link, no event</div>`;
-    $('refs').innerHTML = refusals.map(r => `<div class="item"><span class="refused">REFUSED</span> ${esc(r.invoice_id)} step ${esc(r.step)}: <span class="chip chip-bad">${esc(r.reason)}</span> <span class="why">${esc(r.detail)}</span></div>`).join('')
-      || `<div class="item mute">none</div>`;
+    const others = intents.filter(i => !sends.some(x => x.idempotency_key === i.idempotency_key));
+    $('sendN').textContent = intents.length ? sends.length + others.length : '';
+    $('refN').textContent = intents.length || refusals.length ? refusals.length : '';
+    if (s.phase === 'rehearsing') { $('sends').innerHTML = `<div class="item mute"><span class="spin"></span> rehearsing the whole ledger against the shadow inbox: live actor drafts, live verifier checks…</div>`; $('refs').innerHTML = ''; }
+    else if (!intents.length && !refusals.length) { $('sends').innerHTML = `<div class="item mute">${s.phase === 'none' ? 'press Rehearse today' : 'nothing'}</div>`; $('refs').innerHTML = ''; }
+    else {
+      $('sends').innerHTML = (sends.map(x => sendLine(x, intents)).join('') + others.map(o => `<div class="item"><span class="send">WILL DO</span> ${esc(o.kind)} ${esc(o.invoice_id)} step ${esc(o.step)}</div>`).join('')) || `<div class="item mute">nothing: no email, no link, no event</div>`;
+      $('refs').innerHTML = refusals.map(r => `<div class="item"><span class="refused">REFUSED</span> ${esc(r.invoice_id)} step ${esc(r.step)}: <span class="chip chip-bad">${esc(r.reason)}</span> <span class="why">${esc(r.detail)}</span></div>`).join('') || `<div class="item mute">none</div>`;
+    }
+    const when = (s.started_at || '').replace('T', ' ').slice(0, 16);
+    $('rehSrc').textContent = s.run_id ? `${s.run_id} · ${s.phase}${when ? ' · ' + when : ''}${s.phase === 'executed' ? ' · ' + (s.summary || '') : ''}` : '';
 
-    const es = Array.isArray(plan.end_state) ? plan.end_state : [];
+    const es = Array.isArray(s.end_state) ? s.end_state : [];
     $('endN').textContent = es.length ? `${es.filter(e => e.expected === e.actual).length}/${es.length}` : '';
     $('endstate').innerHTML = es.length ? es.map(e => { const ok = e.expected === e.actual; return `
       <div class="line"><span style="width:10px;height:10px;border-radius:50%;background:${ok ? '#3fb950' : '#f85149'};display:inline-block"></span>
       <span style="min-width:80px;font-weight:600">${esc(APP[e.app] || e.app)}</span><span class="mono ${ok ? 'send' : 'refused'}">${esc(e.actual)}<span class="mute">/${esc(e.expected)}</span></span>
-      <span class="mute small">${esc(e.detail || '')}</span></div>`; }).join('') : `<div class="mute small">not asserted in this plan</div>`;
-
-    const tr = Array.isArray(plan.trace) ? plan.trace : [];
+      <span class="mute small">${esc(e.detail || '')}</span></div>`; }).join('') : `<div class="mute small">asserted per app after execute</div>`;
+    const tr = s.trace || [];
     $('traceN').textContent = tr.length || '';
     $('trace').innerHTML = tr.map(t => { const d = (t.decision || '').toUpperCase();
-      const cls = t.phase === 'abort' || d.startsWith('REFUSED') || d.includes('ABORTED') || d.startsWith('FAILED') ? 'bad'
+      const cls = t.phase === 'abort' || d.startsWith('REFUSED') || d.includes('ABORTED') || d.startsWith('FAILED') || d.includes('MISMATCH') ? 'bad'
         : d.startsWith('PASS') || d.startsWith('SENT') || d.startsWith('CREATED') || d.includes('END STATE OK') || t.phase === 'done' ? 'ok'
         : t.phase === 'decide' || t.phase === 'tap' || t.phase === 'posted_plan' ? 'decide' : t.phase === 'reverify' ? 'warn' : '';
-      return `<div><span class="mute">${esc((t.ts || '').slice(11, 19))}</span> <span class="mute">${esc(t.phase)}</span> <span class="${cls}">${esc(t.decision)}</span></div>`; }).join('')
-      || `<div class="mute small">no trace</div>`;
+      return `<div><span class="mute">${esc((t.ts || '').slice(11, 19))}</span> <span class="mute">${esc(t.phase)}</span> <span class="${cls}">${esc(t.decision)}</span></div>`; }).join('');
+    if ((s.phase === 'executed' || s.phase === 'failed') && !openedOnce) { $('endDetails').open = true; $('traceDetails').open = true; openedOnce = true; }
+    if (s.phase === 'rehearsing' || s.phase === 'executing') openedOnce = false;
+
+    const canApprove = s.phase === 'rehearsed' && intents.length > 0 && !busy;
+    $('approve').disabled = !canApprove;
+    $('approveNote').textContent = s.phase === 'failed' && s.error ? s.error
+      : s.phase === 'executing' ? 'approved: re-verifying the ledger, executing, asserting…'
+      : s.phase === 'executed' ? `done: ${s.summary}` : s.phase === 'rehearsed' && !intents.length ? 'nothing to approve: every invoice was refused or waiting'
+      : 'the tap: re-verifies the ledger, then executes with idempotency keys; the plan and the result also post to Slack #owed';
+    $('approveNote').style.color = s.phase === 'failed' ? '#f85149' : '';
+    $('rehearse').disabled = s.phase === 'rehearsing' || s.phase === 'executing' || busy;
+    $('rehSpin').classList.toggle('hidden', s.phase !== 'rehearsing');
+    if (s.mandate_summary) $('mandateLine').textContent = s.mandate_summary;
   }
 
-  function showLastRun() {
-    const plan = Object.assign({}, lastRun.plan || {}, { trace: lastRun.trace || [] });
-    const when = (lastRun.uploaded_at || plan.created_at || '').replace('T', ' ').slice(0, 16);
-    renderOverdue(overdueRows(plan, plan.trace), `last real run · ${when}`);
-    renderPlan(plan, `last real run ${esc(lastRun.run_id || '')}`);
-  }
-
-  async function showScenario(name) {
-    $('rehSrc').innerHTML = '<span class="spin"></span>';
+  async function poll() {
     try {
-      const plan = await getJSON(`/api/rehearse?scenario=${encodeURIComponent(name)}`);
-      const src = plan.source === 'live' ? 'live' : plan.source === 'shadow' ? 'shadow rehearsal, template draft' : 'precomputed';
-      renderOverdue(overdueRows(plan, plan.trace), src);
-      renderPlan(plan, src + (plan.live_error ? ' · live fell back' : ''));
+      status = await api('GET', '/freelancer/status');
+      try { localStorage.setItem('owed.desk.status', JSON.stringify(status)); } catch (e) {}
+      offline(false); renderPlan(status);
+      if (status.phase === 'executed' && !poll.reloaded) { poll.reloaded = true; loadOverdue(); }
+      if (status.phase === 'rehearsing' || status.phase === 'executing') poll.reloaded = false;
     } catch (e) {
-      $('rehSrc').textContent = e.message;
+      offline(true, /Failed to fetch|NetworkError|Load failed/.test(e.message) ? '' : e.message);
+      let c = null; try { c = JSON.parse(localStorage.getItem('owed.desk.status') || 'null'); } catch (x) {}
+      if (c) renderPlan(c);
     }
   }
 
-  $('scenario').addEventListener('change', () => {
-    const v = $('scenario').value;
-    location.hash = v;
-    if (v === '__last') showLastRun(); else showScenario(v);
+  $('rehearse').addEventListener('click', async () => {
+    busy = true; $('rehearse').disabled = true; $('rehSpin').classList.remove('hidden');
+    try { await api('POST', '/freelancer/rehearse'); } catch (e) { $('approveNote').textContent = e.message; $('approveNote').style.color = '#f85149'; }
+    busy = false; await poll();
+  });
+  $('approve').addEventListener('click', async () => {
+    if (!status || !status.run_id) return;
+    busy = true; $('approve').disabled = true;
+    try { await api('POST', '/freelancer/approve', { run_id: status.run_id }); } catch (e) { $('approveNote').textContent = e.message; $('approveNote').style.color = '#f85149'; }
+    busy = false; await poll();
+  });
+
+  // ---------- mandate ----------
+  const f = $('mform');
+  $('mandateEdit').addEventListener('click', async (e) => {
+    e.preventDefault();
+    try {
+      const d = await api('GET', '/freelancer/mandate'); const m = d.mandate;
+      f.signoff.value = m.signoff || ''; f.d1.value = m.step_1?.day ?? 3; f.d2.value = m.step_2?.day ?? 10; f.d3.value = m.step_3?.day ?? 21;
+      f.tone.value = (m.tone || []).join(', '); f.never.value = (m.never || []).join(', ');
+      f.classList.remove('hidden'); $('mmsg').textContent = '';
+    } catch (err) { $('mmsg').textContent = err.message; }
+  });
+  $('mandateCancel').addEventListener('click', (e) => { e.preventDefault(); f.classList.add('hidden'); });
+  f.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const split = (v) => v.split(',').map(s => s.trim()).filter(Boolean);
+    try {
+      const d = await api('POST', '/freelancer/mandate', { signoff: f.signoff.value, step_1_day: +f.d1.value, step_2_day: +f.d2.value, step_3_day: +f.d3.value, tone: split(f.tone.value), never: split(f.never.value) });
+      $('mandateLine').textContent = d.summary; f.classList.add('hidden'); $('mmsg').textContent = '';
+    } catch (err) { $('mmsg').textContent = err.message; $('mmsg').style.color = '#f85149'; }
   });
 
   (async () => {
-    const [scn, lr] = await Promise.all([
-      getJSON('/api/scenarios').catch(() => ({ scenarios: [] })),
-      getJSON('/api/last_run').catch(() => ({ available: false })),
-    ]);
-    lastRun = lr && lr.available ? lr : null;
-    const opts = [];
-    if (lastRun) opts.push(`<option value="__last">Last real run</option>`);
-    (scn.scenarios || []).forEach(s => opts.push(`<option value="${esc(s.name)}">${esc(s.title)}</option>`));
-    $('scenario').innerHTML = opts.join('');
-    const want = location.hash.replace('#', '');
-    const names = (scn.scenarios || []).map(s => s.name);
-    if (want === '__last' && lastRun) { $('scenario').value = '__last'; showLastRun(); }
-    else if (names.includes(want)) { $('scenario').value = want; showScenario(want); }
-    else if (lastRun) { $('scenario').value = '__last'; showLastRun(); }
-    else if (names.length) { $('scenario').value = names[0]; showScenario(names[0]); }
-    else $('rehSrc').textContent = 'no scenarios';
+    await resolveBase();
+    loadOverdue();
+    poll(); timer = setInterval(poll, 3000);
   })();
 })();
 </script>
