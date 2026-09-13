@@ -283,8 +283,14 @@ def run(*, ledger: Ledger, inbox: Inbox, calendar: Optional[Calendar], chat: Cha
     _write_plan(state_dir, plan)
 
     # 8. Execute with idempotency keys, then 9. assert end state in every app.
-    for line in executor.execute(plan, ledger, inbox, calendar, chat, state_dir, run_id):
-        trace.write(line)
+    try:
+        for line in executor.execute(plan, ledger, inbox, calendar, chat, state_dir, run_id):
+            trace.write(line)
+    except Exception as e:  # re-raised: fail loud, but leave a readable trace line and a Slack result first
+        msg = f"FAILED during execute: {type(e).__name__}: {str(e)[:300]}"
+        trace("execute", None, msg + f" -- keys left pending in {executor.sent_path(state_dir)}; check the apps before clearing")
+        executor.post(chat, f"OWED result {run_id}: {msg}")
+        raise
     sent = sum(1 for i in plan.intents if i.kind == "send_email")
     executor.post(chat, f"OWED result {run_id}: sent {sent}, aborted {len(aborts)}" + "".join(f"\n{a}" for a in aborts))
     try:
