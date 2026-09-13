@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OWED · Open my own desk</title>
+<link rel="stylesheet" href="/owed.css">
+<style>
+  .form { display: grid; grid-template-columns: 1fr 1.4fr auto; gap: 14px; max-width: 900px; margin-bottom: 20px; }
+  .note { color: #8b98a8; font-size: 15px; max-width: 900px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand"><b>OWED</b><a href="/">← home</a></div>
+  <p class="lead">Open your own desk: four overdue clients in your name, chased from Priya's test account to your inbox.</p>
+  <div class="form">
+    <input id="name" class="field" placeholder="your name (signs the emails)" maxlength="40">
+    <input id="email" class="field" type="email" placeholder="your email (the clients are you+alder, you+birch, …)">
+    <button id="go" class="btn btn-go btn-lg"><span id="spin" class="spin hidden"></span> Open my desk</button>
+  </div>
+  <div id="msg" class="note">Seeds four Stripe test invoices at days 4, 12, 13 (partly paid) and 22, and copies the mandate with your signoff.</div>
+</div>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  let base = '';
+  (async () => { try { const r = await fetch('/client.json', { cache: 'no-store' }); if (r.ok) { const d = await r.json(); if (d.url) base = d.url.replace(/\/$/, ''); } } catch (e) {} })();
+  async function go() {
+    const name = $('name').value.trim(), email = $('email').value.trim().toLowerCase();
+    if (!name || !email) { $('msg').textContent = 'Name and email, please.'; $('msg').style.color = '#f85149'; return; }
+    $('go').disabled = true; $('spin').classList.remove('hidden'); $('msg').style.color = ''; $('msg').textContent = 'Seeding four invoices in Stripe test mode…';
+    try {
+      const r = await fetch(base + '/desk/create', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name, email }) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok) throw new Error(d.detail || (r.status + ' ' + r.statusText));
+      location.href = '/desk/' + d.slug;
+    } catch (e) { $('msg').textContent = /Failed to fetch|NetworkError|Load failed/.test(e.message) ? 'the agent runtime is offline' : e.message; $('msg').style.color = '#f85149'; $('go').disabled = false; $('spin').classList.add('hidden'); }
+  }
+  $('go').addEventListener('click', go);
+  $('email').addEventListener('keydown', e => { if (e.key === 'Enter') go(); });
+})();
+</script>
+</body>
+</html>

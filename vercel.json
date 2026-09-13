@@ -5,6 +5,8 @@
     { "source": "/", "destination": "/index.html" },
     { "source": "/freelancer", "destination": "/freelancer.html" },
     { "source": "/scenarios", "destination": "/scenarios.html" },
+    { "source": "/desk", "destination": "/desk.html" },
+    { "source": "/desk/:slug", "destination": "/freelancer.html" },
     { "source": "/client", "destination": "/client.html" }
   ]
 }

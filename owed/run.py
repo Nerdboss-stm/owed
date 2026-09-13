@@ -429,7 +429,7 @@ def _live_adapters(with_chat: bool) -> tuple:
 def rehearse_for(email: str, state_dir: Path, *, ledger: Optional[Ledger] = None, inbox: Optional[Inbox] = None,
                  calendar: Optional[Calendar] = None, today: Optional[date] = None, chat: Optional[Chat] = None,
                  run_id: Optional[str] = None, drafter: Optional[Drafter] = None,
-                 mandate: Optional[dict] = None) -> tuple[Plan, str]:
+                 mandate: Optional[dict] = None, clients: Optional[set[str]] = None) -> tuple[Plan, str]:
     """Snapshot the apps, keep only this client's invoices (or every invoice when email is ALL_CLIENTS, the
     freelancer's desk), rehearse against Shadow. Reads only unless a chat is given, in which case the plan
     is posted through the executor and its ts returned.
@@ -449,7 +449,12 @@ def rehearse_for(email: str, state_dir: Path, *, ledger: Optional[Ledger] = None
     trace = Tracer(run_id, state_dir / "traces" / f"{run_id}.jsonl")
 
     snap = snapshot(ledger, inbox, calendar, today)
-    if everyone:
+    if everyone and clients:
+        wanted = {c.lower() for c in clients}
+        mine = [i for i in snap["invoices"] if (i.get("client_email") or "").lower() in wanted]
+        trace("read_ledger", None, f"{len(snap['invoices'])} overdue invoice(s) in the ledger, {len(mine)} for this desk's {len(wanted)} client(s)",
+              invoices=[i["invoice_id"] for i in mine])
+    elif everyone:
         mine = list(snap["invoices"])
         trace("read_ledger", None, f"{len(mine)} overdue invoice(s) in the ledger, all clients",
               invoices=[i["invoice_id"] for i in mine])
@@ -514,7 +519,7 @@ def send_receipt_for(email: str, run_id: str, invoice_id: str, state_dir: Path, 
 
 def execute_for(email: str, run_id: str, state_dir: Path, *, ledger: Optional[Ledger] = None,
                 inbox: Optional[Inbox] = None, calendar: Optional[Calendar] = None, chat: Optional[Chat] = None,
-                plan_ts: str = "") -> Plan:
+                plan_ts: str = "", clients: Optional[set[str]] = None) -> Plan:
     """The tap -> re-verify live -> execute -> assert half, for one client's rehearsed plan. The tap cannot
     be skipped: with plan_ts the plan was already posted (rehearse_for with a chat); without it the plan is
     posted here first. chat is the tap channel: WebTapChat for the web Approve, default the freelancer's
@@ -529,11 +534,12 @@ def execute_for(email: str, run_id: str, state_dir: Path, *, ledger: Optional[Le
         live_ledger, live_inbox, live_calendar, live_chat = _live_adapters(with_chat=chat is None)
         ledger, inbox = ledger or live_ledger, inbox or live_inbox
         calendar, chat = calendar or live_calendar, chat or live_chat
-    if email != ALL_CLIENTS:
+    allowed = {c.lower() for c in clients} if clients else ({email} if email != ALL_CLIENTS else None)
+    if allowed is not None:
         for iid in {i.invoice_id for i in plan.intents}:
             owner = ledger.get(iid).client_email.lower()
-            if owner != email:
-                raise ValueError(f"plan {run_id} has an intent for {iid}, whose client is {owner}, not {email}")
+            if owner not in allowed:
+                raise ValueError(f"plan {run_id} has an intent for {iid}, whose client is {owner}, not on this desk")
     trace = Tracer(run_id, state_dir / "traces" / f"{run_id}.jsonl", append=True)
     if not plan_ts:
         from owed.agent import executor  # the only live-write path
