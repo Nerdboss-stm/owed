@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OWED · Be the client</title>
+<link rel="stylesheet" href="/owed.css">
+<style>
+  .start { display: flex; gap: 14px; align-items: stretch; max-width: 760px; margin-bottom: 36px; }
+  .start .field { font-size: 19px; }
+  .tl { list-style: none; margin: 0 0 32px; padding: 0; max-width: 760px; }
+  .tl li { display: grid; grid-template-columns: 28px 1fr; gap: 16px; padding: 10px 0; font-size: 19px; color: #4a5766; position: relative; }
+  .tl li::before { content: ""; position: absolute; left: 13px; top: 34px; bottom: -10px; width: 2px; background: #1f2a37; }
+  .tl li:last-child::before { display: none; }
+  .tl .dot { width: 28px; height: 28px; border-radius: 50%; border: 2px solid #2a3644; background: #0a0e14; display: flex; align-items: center; justify-content: center; font-size: 14px; color: #3fb950; z-index: 1; }
+  .tl li.done { color: #e6edf3; } .tl li.done .dot { border-color: #3fb950; }
+  .tl li.active { color: #e6edf3; } .tl li.active .dot { border-color: #58a6ff; }
+  .tl li.bad { color: #e6edf3; } .tl li.bad .dot { border-color: #f85149; color: #f85149; }
+  .tl .sub { display: block; font-size: 15px; color: #8b98a8; margin-top: 2px; }
+  .prompts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin: 0 0 24px; }
+  .prompts div { color: #8b98a8; font-size: 16px; padding: 14px 16px; border: 1px dashed #2a3644; border-radius: 10px; }
+  .actions { display: flex; gap: 14px; align-items: center; flex-wrap: wrap; margin-bottom: 14px; }
+  .note { color: #8b98a8; font-size: 15px; }
+  .offline { color: #d29922; font-size: 16px; margin-bottom: 20px; }
+  .extra { margin-top: 28px; max-width: 760px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="brand"><b>OWED</b><a id="home" href="/">← home</a><a id="desk" href="/freelancer">the freelancer's desk</a></div>
+
+  <p class="lead" id="lead">Be the client who owes $3,400: the agent will chase you for real, and you decide whether it may.</p>
+  <div id="offline" class="offline hidden">the agent runtime is offline</div>
+
+  <div class="start" id="startRow">
+    <input id="email" class="field" type="email" placeholder="your email" autocomplete="email">
+    <button id="start" class="btn btn-go btn-lg"><span id="startSpin" class="spin hidden"></span> Send me an invoice</button>
+  </div>
+
+  <div id="after" class="hidden">
+    <ol class="tl" id="timeline"></ol>
+
+    <div class="prompts">
+      <div>Reply “I'll pay Friday” and rerun.</div>
+      <div>Reply with an instruction and rerun.</div>
+      <div>Pay the link with 4242 4242 4242 4242.</div>
+    </div>
+    <div class="actions">
+      <button id="rerun" class="btn btn-go">Rerun</button>
+      <button id="approve" class="btn btn-ok" disabled>Approve ✅</button>
+      <span class="note">This sandbox lets you play both sides: you are the client by email and the freelancer by the Approve button.</span>
+    </div>
+    <div id="msg" class="note"></div>
+
+    <div class="extra card">
+      <details><summary>Rehearsal <span id="planN" class="mono"></span></summary><div class="body" id="plan"></div></details>
+      <details><summary>End state <span id="endN" class="mono"></span></summary><div class="body" id="endstate"></div></details>
+      <details><summary>Trace <span id="traceN" class="mono"></span></summary><div class="body log" id="trace" style="max-height:480px;overflow:auto"></div></details>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const money = (n) => (n == null || n === '') ? '' : '$' + Number(n).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  const STATE = { none: 'no reply', other: 'a reply, no instruction in it', says_paid: 'says paid', disputes: 'disputes the invoice',
+                  asks_docs: 'asks for documents', promises_date: 'promises a date', injection: 'an instruction (injection)' };
+  let base = '', busy = false, timer = null, status = null;
+
+  const email = () => $('email').value.trim().toLowerCase();
+  const cacheKey = () => 'owed.status.' + email();
+  function say(t, bad) { $('msg').textContent = t || ''; $('msg').style.color = bad ? '#f85149' : ''; }
+
+  // Backend: the local server serves this page itself; on Vercel client.json names the tunnel.
+  async function resolveBase() {
+    try { const r = await fetch('/client.json', { cache: 'no-store' }); if (r.ok) { const d = await r.json(); if (d.url) base = d.url.replace(/\/$/, ''); } } catch (e) {}
+  }
+  async function api(method, path, body) {
+    const r = await fetch(base + path, { method, headers: { 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined, cache: 'no-store' });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.detail || (r.status + ' ' + r.statusText));
+    return d;
+  }
+
+  // ---------- timeline ----------
+  function steps(s) {
+    const runs = s.runs || [], inv = s.invoice || {};
+    const first = runs.find(r => r.summary) || runs[0];
+    const approved = runs.some(r => r.approved_at), sent = runs.some(r => r.sent);
+    // A rerun is a run started after the chase email went out: that is the one that sees your reply.
+    const sentIdx = runs.findIndex(r => r.sent);
+    const reruns = sentIdx >= 0 ? runs.slice(sentIdx + 1) : [];
+    const rerun = reruns.length > 0;
+    const latest = rerun ? reruns[reruns.length - 1] : {};
+    const closed = s.closed && s.closed.line;
+    const outcome = rerun ? (latest.refusals && latest.refusals.length ? { bad: true, label: 'Refused', sub: latest.refusals.map(r => `${r.reason}: ${r.detail}`).join(' · ') }
+                           : latest.sent ? { label: 'Sent', sub: 'a second email went out' } : latest.aborted ? { bad: true, label: 'Aborted', sub: 'money arrived between rehearsal and send' } : null) : null;
+    return [
+      { label: 'Invoice created', done: !!inv.invoice_id, sub: inv.invoice_id ? `${inv.invoice_id} · ${money(inv.amount_due)} · ${inv.days_overdue} days overdue · Stripe test mode` : '' },
+      { label: 'Rehearsed', done: !!(first && first.summary), active: s.phase === 'rehearsing' && !sent, sub: first && first.summary ? `${first.summary} · shadow inbox, second model verified the draft` : 'planner → drafter → verifier against a shadow copy' },
+      { label: 'Approved', done: approved, sub: approved ? 'you tapped Approve; the ledger was re-verified before anything sent' : 'press Approve: nothing sends without it' },
+      { label: 'Email sent to you', done: sent, active: s.phase === 'executing', sub: sent ? 'check your inbox: one email, one payment link, one idempotency key' : '' },
+      { label: 'Your reply detected: ' + (rerun ? (STATE[latest.thread_state] || latest.thread_state || 'none') : '…'), done: rerun, active: sent && s.phase === 'rehearsing', sub: rerun ? 'the reply is classified as data, never followed' : 'reply to the email, then press Rerun' },
+      { label: outcome ? outcome.label : 'Refused / Sent', done: !!outcome, bad: outcome && outcome.bad, sub: outcome ? outcome.sub : 'what the agent does with your reply' },
+      { label: 'Paid', done: !!closed, sub: closed ? s.closed.line : 'pay the link in the email' },
+      { label: 'Closed, receipt sent', done: !!s.receipt_sent, active: !!closed && !s.receipt_sent && !s.receipt_error, bad: !!s.receipt_error, sub: s.receipt_sent ? 'a receipt went to you in the same thread' : s.receipt_error || '' },
+    ];
+  }
+
+  function renderTimeline(s) {
+    $('timeline').innerHTML = steps(s).map(st => `
+      <li class="${st.done ? 'done' : ''} ${st.active ? 'active' : ''} ${st.bad ? 'bad' : ''}">
+        <div class="dot">${st.done ? (st.bad ? '✕' : '✓') : st.active ? '<span class="spin"></span>' : ''}</div>
+        <div>${esc(st.label)}${st.sub ? `<span class="sub">${esc(st.sub)}</span>` : ''}</div>
+      </li>`).join('');
+  }
+
+  function renderExtras(s) {
+    const p = s.plan || {}, intents = p.intents || [], refusals = p.refusals || [];
+    $('planN').textContent = `${intents.length} intent · ${refusals.length} refused`;
+    $('plan').innerHTML = intents.map(i => i.kind === 'send_email'
+      ? `<div class="line"><span class="send">WILL SEND</span><span>${esc(i.invoice_id)} step ${esc(i.step)} → ${esc(i.payload.to)} “${esc(i.payload.subject)}” <span class="mono">${esc(money(i.payload.amount))}</span><pre class="mail">${esc(i.payload.body)}</pre></span></div>`
+      : `<div class="line"><span class="send">WILL DO</span><span>${esc(i.kind)} ${esc(i.invoice_id)} step ${esc(i.step)}</span></div>`).join('')
+      + refusals.map(r => `<div class="line"><span class="refused">REFUSED</span><span>${esc(r.invoice_id)} step ${esc(r.step)} <span class="chip chip-bad">${esc(r.reason)}</span> ${esc(r.detail)}</span></div>`).join('')
+      || '<div class="mute small">no plan yet</div>';
+    const es = Array.isArray(s.end_state) ? s.end_state : [];
+    $('endN').textContent = es.length ? `${es.filter(e => e.expected === e.actual).length}/${es.length}` : '';
+    $('endstate').innerHTML = es.length ? es.map(e => `<div class="line"><span style="min-width:80px;font-weight:600">${esc(e.app)}</span><span class="mono ${e.expected === e.actual ? 'send' : 'refused'}">${esc(e.actual)}<span class="mute">/${esc(e.expected)}</span></span><span class="mute small">${esc(e.detail || '')}</span></div>`).join('') : '<div class="mute small">not asserted yet</div>';
+    const tr = s.trace || [];
+    $('traceN').textContent = tr.length || '';
+    $('trace').innerHTML = tr.map(t => { const d = (t.decision || '').toUpperCase();
+      const cls = t.phase === 'abort' || d.startsWith('REFUSED') || d.startsWith('FAILED') ? 'bad' : d.startsWith('PASS') || d.startsWith('SENT') || d.startsWith('CREATED') || d.startsWith('CLOSED') || t.phase === 'done' ? 'ok' : t.phase === 'decide' || t.phase === 'tap' ? 'decide' : t.phase === 'reverify' ? 'warn' : '';
+      return `<div><span class="mute">${esc((t.ts || '').slice(11, 19))}</span> <span class="mute">${esc(t.phase)}</span> <span class="${cls}">${esc(t.decision)}</span></div>`; }).join('');
+  }
+
+  function render(s, fromCache) {
+    status = s;
+    if (!s || s.phase === 'none') { $('after').classList.add('hidden'); return; }
+    $('after').classList.remove('hidden');
+    renderTimeline(s); renderExtras(s);
+    const canApprove = s.phase === 'rehearsed' && (s.plan?.intents || []).length > 0;
+    $('approve').disabled = !canApprove || busy || fromCache;
+    $('rerun').disabled = busy || fromCache || s.phase === 'rehearsing' || s.phase === 'executing';
+    if (s.phase === 'failed' && s.error) say(s.error, true);
+    else if (s.phase === 'rehearsed' && !canApprove) say('Nothing to approve: the agent refused. Reply differently, or pay, and rerun.');
+    else if (s.phase === 'rehearsed') say('Rehearsed. Nothing has been sent. Approve to let it send.');
+    else say('');
+  }
+
+  async function poll() {
+    if (!email()) return;
+    try {
+      const s = await api('GET', `/client/status?email=${encodeURIComponent(email())}`);
+      $('offline').classList.add('hidden');
+      try { localStorage.setItem(cacheKey(), JSON.stringify(s)); } catch (e) {}
+      render(s, false);
+    } catch (e) {
+      $('offline').textContent = 'the agent runtime is offline' + (e.message && !/Failed to fetch|NetworkError|Load failed/.test(e.message) ? ` (${e.message})` : '');
+      $('offline').classList.remove('hidden');
+      let cached = null; try { cached = JSON.parse(localStorage.getItem(cacheKey()) || 'null'); } catch (x) {}
+      if (cached) render(cached, true);
+    }
+  }
+  function startPolling() { if (timer) clearInterval(timer); poll(); timer = setInterval(poll, 3000); }
+
+  async function start() {
+    if (busy || !email()) { if (!email()) say('Enter your email first.', true); return; }
+    try { localStorage.setItem('owed.email', email()); } catch (e) {}
+    busy = true; $('start').disabled = true; $('rerun').disabled = true; $('startSpin').classList.remove('hidden');
+    $('after').classList.remove('hidden');
+    startPolling();
+    try { await api('POST', '/client/start', { email: email() }); await poll(); }
+    catch (e) { say(e.message, true); }
+    finally { busy = false; $('start').disabled = false; $('startSpin').classList.add('hidden'); await poll(); }
+  }
+
+  $('start').addEventListener('click', start);
+  $('rerun').addEventListener('click', start);
+  $('email').addEventListener('keydown', e => { if (e.key === 'Enter') start(); });
+  $('approve').addEventListener('click', async () => {
+    if (!status || !status.run_id) return;
+    $('approve').disabled = true;
+    try { await api('POST', '/client/approve', { email: email(), run_id: status.run_id }); await poll(); }
+    catch (e) { say(e.message, true); }
+  });
+  $('email').addEventListener('change', startPolling);
+
+  (async () => {
+    await resolveBase();
+    try { $('email').value = localStorage.getItem('owed.email') || ''; } catch (e) {}
+    if (email()) startPolling();
+  })();
+})();
+</script>
+</body>
+</html>

@@ -1,19 +1,18 @@
-"""WebTapChat: a Chat adapter whose tap is a file, for the Rehearsal Room. stdlib only.
+"""WebTapChat: a Chat adapter whose tap is a file. Used by Be the client (ui/client_server.py). stdlib only.
 
-Layout, per client, under state/clients/<email>/:
-  status.jsonl    one line per post(): {"ts", "text", "at"}. The UI reads this; it is the API.
-  approve.json    written by the UI when the freelancer taps: {"approved": true, "message_ts": "<ts>"}.
-                  wait_for_tap(message_ts) polls for it and consumes it (renamed to approve.used.json),
-                  so one flag approves exactly one plan post. A flag for a different message_ts is ignored.
+Per client, under state/clients/<email>/:
+  posts.jsonl    one line per post(): {"ts", "at", "text", "delivered"}. The status panel reads this.
+  approve.json   written by POST /client/approve: {"run_id": ..., "email": ..., "approved_at": ...}.
+                 wait_for_tap() returns True only when the flag names THIS run (or this plan's message ts),
+                 then consumes it (renamed to approve.used.json) so one flag approves exactly one plan.
 
-post() optionally forwards the text to a Slack incoming webhook (SLACK_WEBHOOK_URL or the constructor
-argument). That is the only network write here and it counts as a live write. The freelancer's own
-channel keeps using adapters/chat_live.py (reactions); this adapter is for the client-facing web tap.
+post() forwards the text to the client's Slack incoming webhook when one was given; that webhook call
+is the only network write here and it counts as a live write, never retried. Without a webhook the post
+is a file write for the panel. The freelancer's own channel keeps adapters/chat_live.py (reactions).
+Only owed.agent.executor.post may call post().
 """
 from __future__ import annotations
 import json
-import os
-import re
 import time
 import urllib.error
 import urllib.request
@@ -21,69 +20,84 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from owed.config import ROOT, load_env
 from owed.contract import Chat, live_write
 
-POLL_S = 2.0
-
-
-def client_dir(client_email: str, root: Optional[Path] = None) -> Path:
-    """state/clients/<email>/, with the email reduced to a safe path segment."""
-    safe = re.sub(r"[^A-Za-z0-9._@+-]", "_", client_email.strip().lower())
-    return (root or ROOT / "state" / "clients") / safe
+WEBHOOK_PREFIX = "https://hooks.slack.com/"
+TIMEOUT_S = 10
+POLL_S = 1.0
 
 
 class WebTapChat(Chat):
-    def __init__(self, client_email: str, root: Optional[Path] = None, webhook_url: Optional[str] = None):
-        load_env()
-        self.dir = client_dir(client_email, root)
-        self.dir.mkdir(parents=True, exist_ok=True)
-        self.status = self.dir / "status.jsonl"
-        self.flag = self.dir / "approve.json"
-        self.webhook = webhook_url or os.environ.get("SLACK_WEBHOOK_URL") or None
+    def __init__(self, posts_path: Path, approval_path: Path, run_id: str, webhook_url: Optional[str] = None):
+        if webhook_url and not webhook_url.startswith(WEBHOOK_PREFIX):
+            raise ValueError(f"slack webhook must start with {WEBHOOK_PREFIX}")
+        self._posts = Path(posts_path)
+        self._approval = Path(approval_path)
+        self._run_id = run_id
+        self._webhook = webhook_url or None
+
+    @classmethod
+    def for_client(cls, client_dir: Path, run_id: str, webhook_url: Optional[str] = None) -> "WebTapChat":
+        d = Path(client_dir)
+        return cls(d / "posts.jsonl", d / "approve.json", run_id, webhook_url)
 
     # ---- reads ----
-    def _read_flag(self) -> Optional[dict]:
-        if not self.flag.exists():
+    def _flag(self) -> Optional[dict]:
+        if not self._approval.exists():
             return None
         try:
-            data = json.loads(self.flag.read_text() or "{}")
-        except json.JSONDecodeError:
+            data = json.loads(self._approval.read_text() or "{}")
+        except (ValueError, OSError):
             return None
         return data if isinstance(data, dict) else None
 
+    def approved(self, message_ts: str = "") -> bool:
+        """True only when approve.json names this run (or this plan post) and is not marked rejected."""
+        flag = self._flag()
+        if not flag or flag.get("approved") is False:
+            return False
+        return flag.get("run_id") == self._run_id or (bool(message_ts) and str(flag.get("message_ts")) == str(message_ts))
+
     def wait_for_tap(self, message_ts: str, emoji: str = "white_check_mark", timeout_s: int = 600) -> bool:
-        """True when approve.json says approved for this message_ts. The flag is consumed on success."""
+        """Polls the flag. On success the flag is consumed: one approval, one plan."""
         deadline = time.monotonic() + timeout_s
         while True:
-            flag = self._read_flag()
-            if flag and flag.get("approved") is True and str(flag.get("message_ts", message_ts)) == str(message_ts):
-                used = self.dir / "approve.used.json"
+            if self.approved(message_ts):
+                flag = self._flag() or {}
                 flag["used_at"] = datetime.now(timezone.utc).isoformat()
-                used.write_text(json.dumps(flag, indent=2))
-                self.flag.unlink()
+                self._approval.with_name("approve.used.json").write_text(json.dumps(flag, indent=2))
+                self._approval.unlink()
                 return True
             if time.monotonic() >= deadline:
                 return False
             time.sleep(POLL_S)
 
+    def posts(self) -> list[dict]:
+        if not self._posts.exists():
+            return []
+        return [json.loads(line) for line in self._posts.read_text().splitlines() if line.strip()]
+
     def count_posts(self, contains: str) -> int:
-        if not self.status.exists():
-            return 0
-        return sum(1 for ln in self.status.read_text().splitlines() if ln.strip() and contains in json.loads(ln)["text"])
+        return sum(1 for p in self.posts() if contains in p.get("text", ""))
 
     # ---- write (only executor.py may call this) ----
     def post(self, text: str, blocks: Optional[list] = None) -> str:
         ts = f"{time.time():.6f}"
-        with self.status.open("a") as f:
-            f.write(json.dumps({"ts": ts, "text": text, "at": datetime.now(timezone.utc).isoformat()}) + "\n")
-        if self.webhook:
+        if self._webhook:  # a live write; never retried, a retried webhook post is a duplicate message
             live_write()
-            req = urllib.request.Request(self.webhook, data=json.dumps({"text": text}).encode(), method="POST",
-                                         headers={"Content-Type": "application/json"})
+            req = urllib.request.Request(self._webhook, data=json.dumps({"text": text}).encode("utf-8"),
+                                         headers={"Content-Type": "application/json"}, method="POST")
             try:
-                with urllib.request.urlopen(req, timeout=10) as resp:
-                    resp.read()
+                with urllib.request.urlopen(req, timeout=TIMEOUT_S) as resp:
+                    body = resp.read().decode("utf-8", errors="replace")
+            except urllib.error.HTTPError as e:
+                raise RuntimeError(f"slack webhook refused the post: HTTP {e.code} {e.read().decode('utf-8', 'replace')[:200]}") from e
             except (urllib.error.URLError, TimeoutError) as e:
-                raise RuntimeError(f"Slack webhook post failed: {e}") from e  # fail loud, never retried
+                raise RuntimeError(f"slack webhook post failed: {e}") from e
+            if body.strip() != "ok":
+                raise RuntimeError(f"slack webhook answered {body[:200]!r}, expected 'ok'")
+        self._posts.parent.mkdir(parents=True, exist_ok=True)
+        with self._posts.open("a") as f:
+            f.write(json.dumps({"ts": ts, "at": datetime.now(timezone.utc).isoformat(), "text": text,
+                                "delivered": "slack_webhook" if self._webhook else "panel"}) + "\n")
         return ts

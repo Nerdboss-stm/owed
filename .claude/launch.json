@@ -6,6 +6,12 @@
       "runtimeExecutable": "python3",
       "runtimeArgs": ["ui/dev_server.py", "8765"],
       "port": 8765
+    },
+    {
+      "name": "be-the-client",
+      "runtimeExecutable": "/Users/nerdboss-stm/.venvs/owed/bin/python",
+      "runtimeArgs": ["ui/client_server.py", "8766"],
+      "port": 8766
     }
   ]
 }

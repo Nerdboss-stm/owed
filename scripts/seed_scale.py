@@ -13,7 +13,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from seed_stripe import seed_invoice  # noqa: E402
+from owed.seed import seed_invoice  # noqa: E402
+from seed_stripe import describe  # noqa: E402
 
 BASE = "stmallela.us01"
 CLIENTS = {
@@ -44,7 +45,9 @@ ROWS = [
 def main() -> None:
     for iid, c, amount, days, chased, paid, partial, what in ROWS:
         name, email = CLIENTS[c]
-        print(f"{what:48s} | " + seed_invoice(iid, name, email, amount, days, chased, paid, partial))
+        r = seed_invoice(email, client_name=name, invoice_id=iid, amount=amount, days_overdue=days,
+                         last_chased_step=chased, paid=paid, partial=partial)
+        print(f"{what:48s} | {describe(r)}")
 
 
 if __name__ == "__main__":

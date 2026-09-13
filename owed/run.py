@@ -5,13 +5,18 @@ Entry points:
                            and state/plans/<run_id>.json
   rehearse_shadow(dict)    scenario/snapshot dict -> Plan; Shadow adapters only, no network, no files
                            unless traces_dir is given. This is what api/rehearse.py calls on Vercel.
+  rehearse_for(email, ..)  Be the client: live snapshot filtered to one client's invoices, shadow rehearsal,
+                           state under state/clients/<email>/. ui/client_server.py calls this.
+  execute_for(email, ..)   the tap -> re-verify -> execute -> assert half of the same flow.
 
 Rehearsal never writes live: every write in the loop below hits a Shadow adapter and becomes an Intent.
 Only owed.agent.executor turns Intents into live writes, and only after the Slack tap (PLAN 3:45).
 """
 from __future__ import annotations
+import hashlib
 import json
 import os
+import re
 from dataclasses import replace
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -288,82 +293,33 @@ def run(*, ledger: Ledger, inbox: Inbox, calendar: Optional[Calendar], chat: Cha
           intents=[i.idempotency_key for i in plan.intents], refusals=[r.reason for r in plan.refusals])
     if rehearse_only:
         return plan
-    return _gated(plan, ledger, inbox, calendar, chat, state_dir, traces_dir, trace, run_id)
 
-
-def _live_adapters(with_chat: bool) -> tuple:
-    """Live adapters, imported here so owed.run stays importable where the SDKs are absent (Vercel api/)."""
-    from owed.adapters.calendar_live import GoogleCalendar
-    from owed.adapters.inbox_live import GmailInbox
-    from owed.adapters.ledger_live import StripeLedger
-    chat = None
-    if with_chat:
-        from owed.adapters.chat_live import SlackChat
-        chat = SlackChat()
-    return StripeLedger(), GmailInbox(), GoogleCalendar(), chat
-
-
-def rehearse_for(client_email: str, state_dir: Path, *, run_id: Optional[str] = None,
-                 traces_dir: Optional[Path] = None, today: Optional[date] = None,
-                 drafter: Optional[Drafter] = None, mandate: Optional[dict] = None) -> Plan:
-    """Rehearse one client's invoices against a snapshot of the live apps. Reads only: no Slack post,
-    no tap, no live write. Writes state_dir/plans/<run_id>.json (and a trace if traces_dir is given).
-    Needs the live credentials; never call this from api/."""
-    from owed.config import today as today_fn
-    state_dir = Path(state_dir)
-    run_id = run_id or f"rehearse-{client_email.split('@')[0]}-{datetime.now().strftime('%H%M%S')}"
-    ledger, inbox, calendar, _ = _live_adapters(with_chat=False)
-    snap = snapshot(ledger, inbox, calendar, today or today_fn())
-    snap["invoices"] = [i for i in snap["invoices"] if i["client_email"].lower() == client_email.lower()]
-    world = ShadowWorld.from_snapshot(snap)
-    trace = Tracer(run_id, traces_dir / f"{run_id}.jsonl" if traces_dir else None, echo=False)
-    plan = rehearse(world, mandate or load_mandate(), drafter, run_id, trace)
-    trace("rehearsal_done", None, plan_summary(plan),
-          intents=[i.idempotency_key for i in plan.intents], refusals=[r.reason for r in plan.refusals])
-    _write_plan(state_dir, plan)
-    return plan
-
-
-def execute_for(client_email: str, run_id: str, state_dir: Path, *, traces_dir: Optional[Path] = None,
-                chat: Optional[Chat] = None) -> Plan:
-    """Take the plan rehearse_for wrote and run the gated path: post the plan, wait for the tap,
-    re-verify the live ledger, execute through the executor, assert end state. The tap cannot be
-    skipped. Refuses a plan whose intents belong to another client. Needs the live credentials.
-    chat: the tap channel; default is the freelancer's Slack channel (reactions). Pass
-    WebTapChat(client_email) for the file-based web tap the Rehearsal Room drives."""
-    state_dir = Path(state_dir)
-    plan_path = state_dir / "plans" / f"{run_id}.json"
-    if not plan_path.exists():
-        raise FileNotFoundError(f"no rehearsed plan at {plan_path}; call rehearse_for first")
-    plan = plan_from_json(json.loads(plan_path.read_text()))
-    ledger, inbox, calendar, live_chat = _live_adapters(with_chat=chat is None)
-    chat = chat or live_chat
-    for iid in {i.invoice_id for i in plan.intents}:
-        owner = ledger.get(iid).client_email.lower()
-        if owner != client_email.lower():
-            raise ValueError(f"plan {run_id} has an intent for {iid}, whose client is {owner}, not {client_email}")
-    traces_dir = Path(traces_dir) if traces_dir else state_dir.parent / "traces"
-    trace = Tracer(run_id, traces_dir / f"{run_id}.jsonl", append=True)
-    return _gated(plan, ledger, inbox, calendar, chat, state_dir, traces_dir, trace, run_id)
-
-
-def _gated(plan: Plan, ledger: Ledger, inbox: Inbox, calendar: Optional[Calendar], chat: Chat,
-           state_dir: Path, traces_dir: Path, trace: Tracer, run_id: str) -> Plan:
-    """Post -> tap -> re-verify -> execute -> assert. Every live write inside is the executor's."""
-    from owed.agent import asserter, executor  # the only live-write path
+    from owed.agent import executor  # the only live-write path
 
     # 6. Post the plan to Slack and wait for the tap.
     ts = executor.post(chat, slack_plan_text(plan))
     trace("posted_plan", None, f"posted plan to Slack ({ts}): {plan_summary(plan)}", ts=ts)
+    return gate_and_execute(plan, ts, ledger=ledger, inbox=inbox, calendar=calendar, chat=chat,
+                            state_dir=state_dir, traces_dir=traces_dir, trace=trace, run_id=run_id, push_blob=True)
+
+
+def gate_and_execute(plan: Plan, plan_ts: str, *, ledger: Ledger, inbox: Inbox, calendar: Optional[Calendar],
+                     chat: Chat, state_dir: Path, traces_dir: Path, trace: Tracer, run_id: str,
+                     push_blob: bool = False) -> Plan:
+    """Steps 6b-10 after the plan is posted: wait for the tap, re-verify live, execute, assert.
+    Shared by run() (Slack tap) and execute_for() (web tap). Every live write goes through executor."""
+    from owed.agent import asserter, executor  # the only live-write path
+
     if not plan.intents:
         trace("done", None, "nothing to execute; refusals reported to the freelancer")
         states = asserter.assert_end_state(plan, ledger, inbox, calendar, chat)
         trace("assert", None, "end state ok: " + ", ".join(f"{s.app} {s.actual}/{s.expected}" for s in states))
         _write_plan(state_dir, plan, states)
-        _push_blob(trace, run_id, state_dir, traces_dir)
+        if push_blob:
+            _push_blob(trace, run_id, state_dir, traces_dir)
         return plan
     timeout = int(os.environ.get("OWED_TAP_TIMEOUT", "600"))
-    tapped = chat.wait_for_tap(ts, timeout_s=timeout)
+    tapped = chat.wait_for_tap(plan_ts, timeout_s=timeout)
     trace("tap", None, "tap received: freelancer approved the plan" if tapped else f"no tap within {timeout}s: nothing sends",
           tapped=tapped)
     if not tapped:
@@ -435,8 +391,146 @@ def _gated(plan: Plan, ledger: Ledger, inbox: Inbox, calendar: Optional[Calendar
           states=[{"app": s.app, "expected": s.expected, "actual": s.actual} for s in states])
     trace("done", None, f"sent {sent}, aborted {len(aborts)}, refused {len(plan.refusals) - len(aborts)}")
     _write_plan(state_dir, plan, states)
-    _push_blob(trace, run_id, state_dir, traces_dir)
+    if push_blob:
+        _push_blob(trace, run_id, state_dir, traces_dir)
     return plan
+
+
+# ---------- Be the client: one invoice per email, web tap instead of Slack reaction ----------
+
+EMAIL_RE = re.compile(r"^[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}$")
+
+
+def client_key(email: str) -> str:
+    return hashlib.sha1(email.strip().lower().encode("utf-8")).hexdigest()[:4].upper()
+
+
+def client_dir(email: str, state_root: Path) -> Path:
+    """state/clients/<email>. The email is validated so it is one safe path segment."""
+    email = email.strip().lower()
+    if not EMAIL_RE.match(email) or ".." in email:
+        raise ValueError(f"not an email address: {email!r}")
+    return Path(state_root) / "clients" / email
+
+
+def _live_adapters(with_chat: bool) -> tuple:
+    """Live adapters, imported here so owed.run stays importable where the SDKs are absent (Vercel api/)."""
+    from owed.adapters.calendar_live import GoogleCalendar
+    from owed.adapters.inbox_live import GmailInbox
+    from owed.adapters.ledger_live import StripeLedger
+    chat = None
+    if with_chat:
+        from owed.adapters.chat_live import SlackChat
+        chat = SlackChat()
+    return StripeLedger(), GmailInbox(), GoogleCalendar(), chat
+
+
+def rehearse_for(email: str, state_dir: Path, *, ledger: Optional[Ledger] = None, inbox: Optional[Inbox] = None,
+                 calendar: Optional[Calendar] = None, today: Optional[date] = None, chat: Optional[Chat] = None,
+                 run_id: Optional[str] = None, drafter: Optional[Drafter] = None,
+                 mandate: Optional[dict] = None) -> tuple[Plan, str]:
+    """Snapshot the apps, keep only this client's invoices, rehearse against Shadow. Reads only unless a
+    chat is given, in which case the plan is posted through the executor and its ts returned.
+    Adapters default to the live ones (needs credentials; never call from api/). Writes
+    <state_dir>/plans/<run_id>.json, <state_dir>/traces/<run_id>.jsonl and <state_dir>/latest.json."""
+    from owed.config import today as today_fn
+    email = email.strip().lower()
+    state_dir = Path(state_dir)
+    run_id = run_id or f"client-{client_key(email)}-{datetime.now().strftime('%H%M%S')}"
+    if ledger is None or inbox is None:
+        live_ledger, live_inbox, live_calendar, _ = _live_adapters(with_chat=False)
+        ledger, inbox = ledger or live_ledger, inbox or live_inbox
+        calendar = calendar or live_calendar
+    today = today or today_fn()
+    trace = Tracer(run_id, state_dir / "traces" / f"{run_id}.jsonl")
+
+    snap = snapshot(ledger, inbox, calendar, today)
+    mine = [i for i in snap["invoices"] if (i.get("client_email") or "").lower() == email]
+    trace("read_ledger", None, f"{len(snap['invoices'])} overdue invoice(s) in the ledger, {len(mine)} for {email}",
+          invoices=[i["invoice_id"] for i in mine])
+    snap["invoices"] = mine
+    snap["threads"] = {t: m for t, m in snap["threads"].items() if any(i.get("thread_id") == t for i in mine)}
+    snap["links"] = {i["invoice_id"]: [] for i in mine}
+
+    world = ShadowWorld.from_snapshot(snap)
+    plan = rehearse(world, mandate or load_mandate(), drafter, run_id, trace)
+    _write_plan(state_dir, plan)
+    trace("rehearsal_done", None, plan_summary(plan),
+          intents=[i.idempotency_key for i in plan.intents], refusals=[r.reason for r in plan.refusals])
+    (state_dir / "latest.json").write_text(json.dumps({"run_id": run_id, "email": email}))
+
+    ts = ""
+    if chat is not None:
+        from owed.agent import executor  # the only live-write path
+        ts = executor.post(chat, slack_plan_text(plan))
+        trace("posted_plan", None, f"posted plan ({ts}): {plan_summary(plan)}", ts=ts)
+    return plan, ts
+
+
+def send_receipt_for(email: str, run_id: str, invoice_id: str, state_dir: Path, *, ledger: Ledger, inbox: Inbox,
+                     chat: Chat, mandate: Optional[dict] = None) -> list[TraceLine]:
+    """Be the client, last step: the invoice is paid, so send one receipt in the chase thread and post the
+    CLOSED line. The same receipt_draft/receipt_checks as the core loop, no model; idempotent on key
+    <invoice_id>:receipt through the executor, so a run.py receipt and a panel receipt never both send."""
+    from owed.agent import executor  # the only live-write path
+    from owed.agent.drafter import receipt_draft
+    from owed.agent.verifier import receipt_checks
+    from owed.contract import Intent
+    state_dir = Path(state_dir)
+    inv = ledger.get(invoice_id)
+    if not inv.paid:
+        raise ValueError(f"{invoice_id} does not read paid in the ledger; no receipt")
+    mandate = mandate or load_mandate()
+    draft = receipt_draft(inv, mandate)
+    refusals = receipt_checks(draft, inv, mandate)
+    if refusals:
+        raise ValueError(f"receipt for {invoice_id} refused: {refusals[0].detail}")
+    thread_id = inv.thread_id
+    if not thread_id and hasattr(inbox, "latest_thread_id"):
+        thread_id = inbox.latest_thread_id(f"subject:{invoice_id}")  # type: ignore[attr-defined]
+    amount = _money(inv.amount_total)
+    plan = Plan(run_id=run_id, created_at=datetime.now(timezone.utc), intents=[Intent(
+        kind="send_email", invoice_id=invoice_id, step=0, idempotency_key=f"{invoice_id}:receipt",
+        payload={"to": inv.client_email, "subject": draft["subject"], "body": draft["body"],
+                 "amount": inv.amount_total, "thread_id": thread_id, "receipt": True})])
+    trace = Tracer(run_id, state_dir / "traces" / f"{run_id}.jsonl", append=True)
+    trace("reverify", invoice_id, f"CLOSED {invoice_id}: {amount} received; sending receipt in the chase thread")
+    lines = executor.execute(plan, ledger, inbox, None, chat, state_dir, run_id)
+    for line in lines:
+        trace.write(line)
+    executor.post(chat, f"OWED closed {invoice_id}: closed, {amount} received, receipt sent to {inv.client_email}")
+    trace("done", invoice_id, f"closed {invoice_id}, receipt sent")
+    return lines
+
+
+def execute_for(email: str, run_id: str, state_dir: Path, *, ledger: Optional[Ledger] = None,
+                inbox: Optional[Inbox] = None, calendar: Optional[Calendar] = None, chat: Optional[Chat] = None,
+                plan_ts: str = "") -> Plan:
+    """The tap -> re-verify live -> execute -> assert half, for one client's rehearsed plan. The tap cannot
+    be skipped: with plan_ts the plan was already posted (rehearse_for with a chat); without it the plan is
+    posted here first. chat is the tap channel: WebTapChat for the web Approve, default the freelancer's
+    Slack. Adapters default to the live ones. Refuses a plan whose intents belong to another client."""
+    email = email.strip().lower()
+    state_dir = Path(state_dir)
+    plan_path = state_dir / "plans" / f"{run_id}.json"
+    if not plan_path.exists():
+        raise FileNotFoundError(f"no plan {run_id} for {email}; call rehearse_for first")
+    plan = plan_from_json(json.loads(plan_path.read_text()))
+    if ledger is None or inbox is None or chat is None:
+        live_ledger, live_inbox, live_calendar, live_chat = _live_adapters(with_chat=chat is None)
+        ledger, inbox = ledger or live_ledger, inbox or live_inbox
+        calendar, chat = calendar or live_calendar, chat or live_chat
+    for iid in {i.invoice_id for i in plan.intents}:
+        owner = ledger.get(iid).client_email.lower()
+        if owner != email:
+            raise ValueError(f"plan {run_id} has an intent for {iid}, whose client is {owner}, not {email}")
+    trace = Tracer(run_id, state_dir / "traces" / f"{run_id}.jsonl", append=True)
+    if not plan_ts:
+        from owed.agent import executor  # the only live-write path
+        plan_ts = executor.post(chat, slack_plan_text(plan))
+        trace("posted_plan", None, f"posted plan ({plan_ts}): {plan_summary(plan)}", ts=plan_ts)
+    return gate_and_execute(plan, plan_ts, ledger=ledger, inbox=inbox, calendar=calendar, chat=chat,
+                            state_dir=state_dir, traces_dir=state_dir / "traces", trace=trace, run_id=run_id)
 
 
 def _groups(plan: Plan) -> dict[str, list]:

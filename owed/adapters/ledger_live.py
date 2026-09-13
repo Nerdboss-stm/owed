@@ -105,6 +105,11 @@ class StripeLedger(Ledger):
                                 "paid_at": datetime.fromtimestamp(s.created, tz=timezone.utc).isoformat(), "link": l.url})
         return out
 
+    def paid_via_link(self, invoice_id: str) -> float:
+        """Dollars received through this invoice's payment links. The Be-the-client status panel reads
+        this to show the CLOSED line; executor.reconcile_links uses link_payments to settle the invoice."""
+        return sum(p["amount"] for p in self.link_payments(invoice_id))
+
     # ---- writes (only executor.py may call these) ----
     def create_payment_link(self, invoice_id: str) -> str:
         inv = self.get(invoice_id)
