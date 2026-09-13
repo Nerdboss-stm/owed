@@ -320,16 +320,20 @@ def rehearse_for(client_email: str, state_dir: Path, *, run_id: Optional[str] = 
     return plan
 
 
-def execute_for(client_email: str, run_id: str, state_dir: Path, *, traces_dir: Optional[Path] = None) -> Plan:
-    """Take the plan rehearse_for wrote and run the gated path: post to Slack, wait for the tap,
+def execute_for(client_email: str, run_id: str, state_dir: Path, *, traces_dir: Optional[Path] = None,
+                chat: Optional[Chat] = None) -> Plan:
+    """Take the plan rehearse_for wrote and run the gated path: post the plan, wait for the tap,
     re-verify the live ledger, execute through the executor, assert end state. The tap cannot be
-    skipped. Refuses a plan whose intents belong to another client. Needs the live credentials."""
+    skipped. Refuses a plan whose intents belong to another client. Needs the live credentials.
+    chat: the tap channel; default is the freelancer's Slack channel (reactions). Pass
+    WebTapChat(client_email) for the file-based web tap the Rehearsal Room drives."""
     state_dir = Path(state_dir)
     plan_path = state_dir / "plans" / f"{run_id}.json"
     if not plan_path.exists():
         raise FileNotFoundError(f"no rehearsed plan at {plan_path}; call rehearse_for first")
     plan = plan_from_json(json.loads(plan_path.read_text()))
-    ledger, inbox, calendar, chat = _live_adapters(with_chat=True)
+    ledger, inbox, calendar, live_chat = _live_adapters(with_chat=chat is None)
+    chat = chat or live_chat
     for iid in {i.invoice_id for i in plan.intents}:
         owner = ledger.get(iid).client_email.lower()
         if owner != client_email.lower():
