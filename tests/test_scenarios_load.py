@@ -1,4 +1,5 @@
 """PLAN 4:15 check: every scenario loads and seeds the stubs; stubs count writes."""
+import json
 from datetime import datetime
 
 import pytest
@@ -6,6 +7,14 @@ import pytest
 from evals import scenario as sc_mod
 from evals.stubs import StubCalendar, StubChat, StubInbox, StubLedger
 from owed.contract import LIVE_WRITES, Calendar, Chat, Inbox, Ledger
+
+try:
+    from owed.adapters.snapshot import ShadowWorld
+except ImportError as exc:  # core's shadow adapters land at the 2:45 merge
+    ShadowWorld = None
+    _snapshot_reason = f"owed.adapters.snapshot not merged: {exc}"
+else:
+    _snapshot_reason = ""
 
 SPEC_ROWS = [
     "clean overdue, day 12",
@@ -42,6 +51,29 @@ def test_scenario_seeds_stubs(sc):
         assert inv.days_overdue(sc.today) > 0
         if inv.thread_id:
             assert stubs.inbox.thread(inv.thread_id), f"{inv.invoice_id} has an empty thread"
+
+
+@pytest.mark.parametrize("sc", ALL, ids=[s.name for s in ALL])
+def test_scenario_is_a_snapshot_dict(sc):
+    """Same layout as owed/adapters/snapshot.py, so run.py can load the file directly."""
+    raw = json.loads(sc.path.read_text())
+    snap = sc.snapshot()
+    assert tuple(snap) == sc_mod.SNAPSHOT_KEYS
+    assert set(snap["links"]) == {i["invoice_id"] for i in raw["invoices"]}
+    assert isinstance(snap["posts"], list) and isinstance(snap["tap"], bool)
+    assert all(isinstance(s, str) for s in snap["free_slots"])
+
+
+@pytest.mark.xfail(ShadowWorld is None, reason=_snapshot_reason, strict=True)
+@pytest.mark.parametrize("sc", ALL, ids=[s.name for s in ALL])
+def test_shadow_world_accepts_scenario_file(sc):
+    raw = json.loads(sc.path.read_text())
+    world = ShadowWorld.from_snapshot(raw)
+    assert world.today == sc.today
+    assert [i.invoice_id for i in world.ledger.overdue(sc.today)] == [i.invoice_id for i in sc.invoices]
+    for inv in sc.invoices:
+        if inv.thread_id:
+            assert len(world.inbox.thread(inv.thread_id)) == len(sc.threads[inv.thread_id])
 
 
 def test_stubs_count_every_write():

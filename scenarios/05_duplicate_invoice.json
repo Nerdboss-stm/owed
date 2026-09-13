@@ -48,6 +48,11 @@
       }
     ]
   },
+  "free_slots": [],
+  "links": {
+    "INV-0042": []
+  },
+  "posts": [],
   "tap": true,
   "runs": 1,
   "expect": {

@@ -37,6 +37,11 @@
       }
     ]
   },
+  "free_slots": [],
+  "links": {
+    "INV-0042": []
+  },
+  "posts": [],
   "tap": true,
   "runs": 1,
   "actor_draft": {
@@ -48,7 +53,9 @@
   "expect": {
     "gmail_sent": 0,
     "calendar_events": 0,
-    "refusal_reasons": ["verifier_discount"],
+    "refusal_reasons": [
+      "verifier_discount"
+    ],
     "refused_before_tap": true
   }
 }

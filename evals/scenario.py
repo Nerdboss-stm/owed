@@ -1,6 +1,11 @@
 """
 Scenario files: scenarios/*.json, one per row of the SPEC reliability table.
 
+Each file is the snapshot dict from owed/adapters/snapshot.py (today, invoices,
+threads, free_slots, links, posts, tap), hand-written, plus eval-only keys.
+`ShadowWorld.from_snapshot(json.load(f))` must accept the file as-is; it ignores
+the extra keys.
+
 File format (all dates ISO; amounts are numbers, never strings):
 
 {
@@ -8,11 +13,17 @@ File format (all dates ISO; amounts are numbers, never strings):
   "row": "clean overdue, day 12",              # exact SPEC table text
   "expected": "step 2 sent, link attached",    # SPEC 'Expected' column
   "end_state": "Gmail 1 sent, Stripe link 1",  # SPEC 'End state checked' column
+
+  # --- snapshot dict, same layout as owed/adapters/snapshot.py ---
   "today": "2026-09-13",
   "invoices": [ {Invoice fields, due_date as YYYY-MM-DD} ],
   "threads": { "<thread_id>": [ {Message fields, ts as ISO datetime} ] },
-  "calendar_slots": ["2026-09-15T10:00:00"],   # optional
+  "free_slots": ["2026-09-15T10:00:00"],
+  "links": { "<invoice_id>": ["<url>"] },      # payment links that already exist
+  "posts": [ "<text>" ],                       # Slack posts that already exist
   "tap": true,                                 # scripted Slack reaction
+
+  # --- eval-only ---
   "events": [ {"on": "tap", "op": "receive_payment", "invoice_id": "INV-0042", "amount": null} ],
   "runs": 1,                                   # how many times run.py is executed on the same state
   "actor_draft": { "INV-0042:2": {"subject": "...", "body": "..."} },   # scripted actor output
@@ -43,6 +54,7 @@ from owed.contract import Invoice, Message
 ROOT = Path(__file__).resolve().parents[1]
 SCENARIO_DIR = ROOT / "scenarios"
 
+SNAPSHOT_KEYS = ("today", "invoices", "threads", "free_slots", "links", "posts", "tap")
 _INVOICE_KEYS = {"invoice_id", "client_email", "client_name", "amount_due", "amount_total", "due_date", "paid"}
 _MESSAGE_KEYS = {"thread_id", "from_addr", "to_addr", "subject", "body", "ts"}
 _EVENT_OPS = {"receive_payment"}
@@ -82,7 +94,9 @@ class Scenario:
     today: date
     invoices: list[Invoice]
     threads: dict[str, list[Message]]
-    calendar_slots: list[datetime]
+    free_slots: list[datetime]
+    links: dict[str, list[str]]
+    posts: list[str]
     tap: bool
     events: list[Event]
     runs: int
@@ -90,6 +104,11 @@ class Scenario:
     mandate: dict
     expect: Expect
     path: Path
+    raw: dict
+
+    def snapshot(self) -> dict:
+        """The owed/adapters/snapshot.py dict for this scenario, nothing else."""
+        return {k: self.raw[k] for k in SNAPSHOT_KEYS}
 
 
 def _require(d: dict, keys: set[str], where: str) -> None:
@@ -154,7 +173,9 @@ def load(name_or_path: str | Path) -> Scenario:
         path = SCENARIO_DIR / f"{path.name}.json"
     where = f"scenario {path.name}"
     raw = json.loads(path.read_text())
-    _require(raw, {"name", "row", "expected", "end_state", "today", "invoices", "threads", "expect"}, where)
+    _require(raw, {"name", "row", "expected", "end_state", "expect", *SNAPSHOT_KEYS}, where)
+    if "calendar_slots" in raw:
+        raise ValueError(f"{where}: use 'free_slots' (snapshot.py layout), not 'calendar_slots'")
 
     invoices = [_invoice(i, f"{where} invoice[{n}]") for n, i in enumerate(raw["invoices"])]
     if not invoices:
@@ -171,6 +192,17 @@ def load(name_or_path: str | Path) -> Scenario:
         if inv.thread_id is not None and inv.thread_id not in threads:
             raise ValueError(f"{where}: invoice {inv.invoice_id} references unknown thread {inv.thread_id}")
 
+    ids = {i.invoice_id for i in invoices}
+    links = {k: list(v) for k, v in raw["links"].items()}
+    for k, v in links.items():
+        if k not in ids:
+            raise ValueError(f"{where}: links for unknown invoice {k}")
+        if not all(isinstance(u, str) for u in v):
+            raise ValueError(f"{where}: links[{k}] must be a list of URLs")
+    posts = list(raw["posts"])
+    if not all(isinstance(p, str) for p in posts):
+        raise ValueError(f"{where}: posts must be a list of strings")
+
     runs = int(raw.get("runs", 1))
     if runs < 1:
         raise ValueError(f"{where}: runs must be >= 1")
@@ -183,14 +215,17 @@ def load(name_or_path: str | Path) -> Scenario:
         today=date.fromisoformat(raw["today"]),
         invoices=invoices,
         threads=threads,
-        calendar_slots=[datetime.fromisoformat(s) for s in raw.get("calendar_slots", [])],
-        tap=bool(raw.get("tap", True)),
+        free_slots=[datetime.fromisoformat(s) for s in raw["free_slots"]],
+        links=links,
+        posts=posts,
+        tap=bool(raw["tap"]),
         events=[_event(e, f"{where} event[{n}]") for n, e in enumerate(raw.get("events", []))],
         runs=runs,
         actor_draft=dict(raw.get("actor_draft", {})),
         mandate=dict(raw.get("mandate", {})),
         expect=_expect(raw["expect"], where),
         path=path,
+        raw=raw,
     )
 
 
@@ -203,9 +238,9 @@ def load_all(directory: Path = SCENARIO_DIR) -> list[Scenario]:
 
 def seed(scenario: Scenario) -> Stubs:
     """Fresh stubs seeded from the scenario, with scenario events wired to the tap."""
-    ledger = StubLedger(scenario.invoices)
+    ledger = StubLedger(scenario.invoices, links=scenario.links)
     inbox = StubInbox(scenario.threads)
-    calendar = StubCalendar(scenario.calendar_slots)
+    calendar = StubCalendar(scenario.free_slots)
 
     tap_events = [e for e in scenario.events if e.on == "tap"]
 
@@ -214,5 +249,5 @@ def seed(scenario: Scenario) -> Stubs:
             if e.op == "receive_payment":
                 ledger.receive_payment(e.invoice_id, e.amount)
 
-    chat = StubChat(tap=scenario.tap, on_tap=on_tap if tap_events else None)
+    chat = StubChat(tap=scenario.tap, on_tap=on_tap if tap_events else None, posts=scenario.posts)
     return Stubs(ledger=ledger, inbox=inbox, calendar=calendar, chat=chat)

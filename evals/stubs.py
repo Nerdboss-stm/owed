@@ -21,10 +21,12 @@ from owed.contract import Calendar, Chat, Inbox, Invoice, Ledger, Message, Step
 class StubLedger(Ledger):
     """Ledger with rows in memory. Rows may share an invoice_id (duplicate scenario)."""
 
-    def __init__(self, invoices: list[Invoice]):
+    def __init__(self, invoices: list[Invoice], links: Optional[dict[str, list[str]]] = None):
         self._rows: list[Invoice] = [replace(i) for i in invoices]
         self.writes = 0
         self.links: dict[str, list[str]] = defaultdict(list)
+        for k, v in (links or {}).items():
+            self.links[k] = list(v)  # links that existed before the run; not writes
         self.chased: list[tuple[str, Step]] = []
 
     def _rows_for(self, invoice_id: str) -> list[Invoice]:
@@ -137,11 +139,12 @@ class StubChat(Chat):
     """Slack stand-in. `tap` is the scripted reaction; `on_tap` fires scenario events
     (for example: money arrives between rehearsal and execute)."""
 
-    def __init__(self, tap: bool = True, on_tap: Optional[Callable[[], None]] = None):
+    def __init__(self, tap: bool = True, on_tap: Optional[Callable[[], None]] = None,
+                 posts: Optional[list[str]] = None):
         self.tap = tap
         self.on_tap = on_tap
         self.writes = 0
-        self.posts: list[str] = []
+        self.posts: list[str] = list(posts or [])  # posts that existed before the run; not writes
         self.tap_calls = 0
 
     def post(self, text: str, blocks: Optional[list] = None) -> str:

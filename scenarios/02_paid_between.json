@@ -37,9 +37,19 @@
       }
     ]
   },
+  "free_slots": [],
+  "links": {
+    "INV-0042": []
+  },
+  "posts": [],
   "tap": true,
   "events": [
-    { "on": "tap", "op": "receive_payment", "invoice_id": "INV-0042", "amount": null }
+    {
+      "on": "tap",
+      "op": "receive_payment",
+      "invoice_id": "INV-0042",
+      "amount": null
+    }
   ],
   "runs": 1,
   "expect": {
